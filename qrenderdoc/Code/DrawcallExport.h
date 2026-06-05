@@ -66,6 +66,7 @@ private:
   DrawcallExportOptions m_Options;
   QVariantList m_Files;
   QVariantList m_Failures;
+  QVariantList m_ConstantBuffers;
   QMap<QString, int> m_UsedFilenames;
 
   QString SafeName(const QString &name, const QString &fallback = QString()) const;
@@ -73,6 +74,8 @@ private:
                              const QString &extension);
   QString MakeResourceBaseName(const QString &category, const QString &stage, const QString &binding,
                                ResourceId id, const QString &resourceName) const;
+  rdcarray<ShaderStage> ActiveShaderStages() const;
+  ResourceId PipelineObjectForStage(ShaderStage stage) const;
 
   bool EnsureDir(const QString &relativeDir);
   bool WriteTextFile(const QString &relativePath, const QString &contents);
@@ -83,6 +86,15 @@ private:
                   const QVariantMap &metadata = QVariantMap());
   void RecordFailure(const QString &task, const QString &message,
                      const QVariantMap &metadata = QVariantMap());
+  QString ShaderReconstructionPriority(const QVariantMap &file) const;
+  QString ShaderReconstructionRole(const QVariantMap &file) const;
+  QString ShaderReconstructionPhase(const QVariantMap &file) const;
+  QVariantMap MakeShaderReconstructionIndex() const;
+  QString LoadShaderReconstructionGoalTemplate(QString *sourcePath) const;
+  QString DefaultShaderReconstructionGoalTemplate() const;
+  QString RenderShaderReconstructionGoalTemplate(const QString &templateText,
+                                                 const QString &sourcePath) const;
+  void WriteShaderReconstructionDocs();
 
   ResultDetails ExportPackage();
   void ExportDrawcallJSON();
@@ -135,6 +147,16 @@ private:
   QString StageShortName(ShaderStage stage) const;
   QString BindingName(const QString &prefix, uint32_t slot) const;
   QString DescriptorBindingName(const UsedDescriptor &used, const QString &defaultPrefix) const;
+  QString ConstantBufferDisplayName(const ConstantBlock &block, const UsedDescriptor &used) const;
+  QVariantMap ConstantBufferGuidance(const QString &displayName, uint64_t byteSize) const;
+  QString ShaderProcessorTargetName(const ShaderProcessingTool &processor) const;
+  QString DisassemblyFileBase(const QString &kind, const QString &targetName) const;
+  QString ShaderResourceReflectionName(ShaderStage stage, const UsedDescriptor &used,
+                                       bool readWrite) const;
+  QString ResourceBufferDisplayName(ShaderStage stage, const UsedDescriptor &used,
+                                    bool readWrite) const;
+  QVariantMap ResourceBufferGuidance(const QString &displayName, uint64_t byteSize,
+                                     bool truncated) const;
   QString ActionFlagsString(ActionFlags flags) const;
   QString ShaderVariableValueString(const ShaderVariable &var, uint32_t idx) const;
   QString FileTypeExtension(FileType type) const;

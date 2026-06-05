@@ -23,10 +23,12 @@
  ******************************************************************************/
 
 #include "DrawcallExport.h"
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QStringList>
 #include <QTextStream>
 #include <QVector>
 #include <string.h>
@@ -47,6 +49,7 @@ ResultDetails DrawcallExporter::ExportCurrentDrawcall(const QString &rootDir,
   m_Options = opts;
   m_Files.clear();
   m_Failures.clear();
+  m_ConstantBuffers.clear();
   m_UsedFilenames.clear();
   m_ExportDir.clear();
 
@@ -97,7 +100,7 @@ QString DrawcallExporter::SafeName(const QString &name, const QString &fallback)
   bool lastUnderscore = false;
   for(QChar ch : ret)
   {
-    const bool invalid = ch.unicode() < 32 || QStringLiteral("<>:\"/\\|?*").contains(ch);
+    const bool invalid = ch.unicode() < 32 || QStringLiteral("<>:\"/\\|?*()").contains(ch);
     const bool whitespace = ch.isSpace();
 
     if(invalid || whitespace)
@@ -159,6 +162,29 @@ QString DrawcallExporter::MakeResourceBaseName(const QString &category, const QS
       .arg(SafeName(ToQStr(id), lit("ResourceId")));
 }
 
+rdcarray<ShaderStage> DrawcallExporter::ActiveShaderStages() const
+{
+  const PipeState &pipe = m_Ctx.CurPipelineState();
+  rdcarray<ShaderStage> ret;
+
+  for(ShaderStage stage :
+      {ShaderStage::Vertex, ShaderStage::Hull, ShaderStage::Domain, ShaderStage::Geometry,
+       ShaderStage::Pixel, ShaderStage::Compute, ShaderStage::Task, ShaderStage::Mesh})
+  {
+    if(pipe.GetShader(stage) != ResourceId() || pipe.GetShaderReflection(stage) != NULL)
+      ret.push_back(stage);
+  }
+
+  return ret;
+}
+
+ResourceId DrawcallExporter::PipelineObjectForStage(ShaderStage stage) const
+{
+  const PipeState &pipe = m_Ctx.CurPipelineState();
+  return stage == ShaderStage::Compute ? pipe.GetComputePipelineObject()
+                                       : pipe.GetGraphicsPipelineObject();
+}
+
 bool DrawcallExporter::EnsureDir(const QString &relativeDir)
 {
   QDir dir(m_ExportDir);
@@ -216,6 +242,12 @@ void DrawcallExporter::RecordFile(const QString &category, const QString &relati
   entry[lit("category")] = category;
   entry[lit("path")] = relativePath;
   entry[lit("status")] = lit("exported");
+  if(!entry.contains(lit("shader_reconstruction_priority")))
+    entry[lit("shader_reconstruction_priority")] = ShaderReconstructionPriority(entry);
+  if(!entry.contains(lit("shader_reconstruction_role")))
+    entry[lit("shader_reconstruction_role")] = ShaderReconstructionRole(entry);
+  if(!entry.contains(lit("shader_reconstruction_phase")))
+    entry[lit("shader_reconstruction_phase")] = ShaderReconstructionPhase(entry);
   m_Files.push_back(entry);
 }
 
@@ -227,6 +259,141 @@ void DrawcallExporter::RecordFailure(const QString &task, const QString &message
   entry[lit("message")] = message;
   entry[lit("status")] = lit("failed");
   m_Failures.push_back(entry);
+}
+
+QString DrawcallExporter::ShaderReconstructionPriority(const QVariantMap &file) const
+{
+  if(file.contains(lit("shader_reconstruction_priority")))
+    return file[lit("shader_reconstruction_priority")].toString();
+
+  const QString category = file[lit("category")].toString();
+  const QString path = file[lit("path")].toString().toLower();
+
+  if(category == lit("drawcall") || category == lit("pipeline_html") ||
+     category == lit("pipeline_json") || category == lit("shader_reconstruction_index") ||
+     category == lit("shader_reconstruction_goal") ||
+     category == lit("shader_reconstruction_agent_guide") ||
+     category == lit("shader_reconstruction_workflow") || category == lit("texture_metadata") ||
+     category == lit("sampler_metadata") || category == lit("constant_buffer_index") ||
+     category == lit("constant_buffer_notes"))
+    return lit("high");
+
+  if(category == lit("shader_metadata") || category == lit("shader_reflection") ||
+     category == lit("shader_disassembly") || category == lit("shader_disassembly_native") ||
+     category == lit("shader_disassembly_hlsl") ||
+     category == lit("shader_disassembly_metadata"))
+    return lit("high");
+
+  if(category == lit("input_texture") || category == lit("output_texture"))
+    return lit("high");
+
+  if(category == lit("constant_buffer_json") || category == lit("constant_buffer_csv"))
+    return lit("high");
+
+  if(category == lit("mesh_postvs_obj") || category == lit("mesh_postvs_metadata") ||
+     category == lit("mesh_vertex_input_layout"))
+    return lit("high");
+
+  if(category == lit("resource_buffer_raw"))
+    return lit("medium");
+
+  if(category == lit("resource_buffer_metadata") || category == lit("resource_buffer_notes"))
+    return lit("medium");
+
+  if(category == lit("shader_raw") || category == lit("shader_source") ||
+     category == lit("constant_buffer_raw") || category.startsWith(lit("mesh_")) ||
+     path.endsWith(lit(".bin")))
+    return lit("medium");
+
+  if(category == lit("shader_disassembly_hlsl_log"))
+    return lit("low");
+
+  return lit("medium");
+}
+
+QString DrawcallExporter::ShaderReconstructionRole(const QVariantMap &file) const
+{
+  const QString category = file[lit("category")].toString();
+
+  if(category == lit("shader_reconstruction_agent_guide"))
+    return lit("Entry point for AI agents; read this first.");
+  if(category == lit("shader_reconstruction_workflow"))
+    return lit("Step-by-step Unity shader reconstruction workflow.");
+  if(category == lit("shader_reconstruction_index"))
+    return lit("Machine-readable priority index for all exported files.");
+  if(category == lit("shader_reconstruction_goal"))
+    return lit("Codex /goal objective for reconstructing the Unity 6 URP mobile shader.");
+  if(category == lit("drawcall"))
+    return lit("Selected event identity, draw dimensions, topology, and shader IDs.");
+  if(category == lit("pipeline_html"))
+    return lit("Full RenderDoc pipeline state export; best human-readable state reference.");
+  if(category == lit("pipeline_json"))
+    return lit("Structured pipeline subset for tools and agents.");
+  if(category == lit("shader_metadata") || category == lit("shader_reflection"))
+    return lit("Shader entry point, signatures, reflection resources, and binding layout.");
+  if(category == lit("shader_disassembly") || category == lit("shader_disassembly_native"))
+    return lit("Native DXBC/DXIL disassembly for ground-truth control/data flow.");
+  if(category == lit("shader_disassembly_hlsl"))
+    return lit("HLSL decompiler output for faster Unity shader reconstruction; cross-check with native disassembly.");
+  if(category == lit("shader_raw"))
+    return lit("Original shader bytecode for tools or later reprocessing.");
+  if(category == lit("input_texture"))
+    return lit("Bound shader input texture; core visual/material evidence.");
+  if(category == lit("output_texture"))
+    return lit("Render target/depth/UAV output; target visual result for validation, including compute-written GBuffer textures.");
+  if(category == lit("texture_metadata"))
+    return lit("Texture path, binding, descriptor, dimensions, and format index.");
+  if(category == lit("sampler_metadata"))
+    return lit("Sampler state for UV/filter/address-mode reconstruction.");
+  if(category == lit("constant_buffer_index"))
+    return lit("Slot-to-file map for active-stage constant buffers, using RenderDoc buffer display names.");
+  if(category == lit("constant_buffer_json") || category == lit("constant_buffer_csv"))
+    return lit("Decoded constant buffer values and layout; primary numeric shader inputs.");
+  if(category == lit("constant_buffer_raw"))
+    return lit("Raw constant buffer bytes; secondary when JSON/CSV decoded values are sufficient.");
+  if(category == lit("mesh_postvs_obj") || category == lit("mesh_postvs_metadata") ||
+     category == lit("mesh_vertex_input_layout"))
+    return lit("Geometry context for vertex inputs and post-transform validation.");
+  if(category.startsWith(lit("mesh_")))
+    return lit("Raw mesh/index/vertex buffer data; supporting evidence.");
+  if(category == lit("resource_buffer_raw"))
+    return lit("Raw SRV/UAV buffer; optional unless shader code directly indexes it.");
+  if(category == lit("resource_buffer_metadata"))
+    return lit("Resource buffer index with names, byte ranges, and priority guidance.");
+  if(category == lit("resource_buffer_notes"))
+    return lit("Notes explaining how to treat large SRV/UAV buffers.");
+
+  return lit("Supporting export file.");
+}
+
+QString DrawcallExporter::ShaderReconstructionPhase(const QVariantMap &file) const
+{
+  const QString category = file[lit("category")].toString();
+
+  if(category == lit("shader_reconstruction_agent_guide") ||
+     category == lit("shader_reconstruction_workflow") ||
+     category == lit("shader_reconstruction_index") ||
+     category == lit("shader_reconstruction_goal") || category == lit("drawcall") ||
+     category == lit("pipeline_html") || category == lit("pipeline_json"))
+    return lit("orientation");
+
+  if(category.startsWith(lit("shader_")))
+    return lit("shader_code");
+
+  if(category == lit("constant_buffer_index") || category.startsWith(lit("constant_buffer")))
+    return lit("parameters");
+
+  if(category == lit("input_texture") || category == lit("output_texture") ||
+     category == lit("texture_metadata") || category == lit("sampler_metadata"))
+    return lit("textures");
+
+  if(category.startsWith(lit("mesh_")))
+    return lit("geometry");
+
+  if(category.startsWith(lit("resource_buffer")))
+    return lit("optional_buffers");
+
+  return lit("supporting");
 }
 
 ResultDetails DrawcallExporter::ExportPackage()
@@ -243,7 +410,9 @@ ResultDetails DrawcallExporter::ExportPackage()
     ExportShaders();
   if(m_Options.exportConstantBuffers)
     ExportConstantBuffers();
-  if(m_Options.exportMeshOBJ || m_Options.exportMeshRawBuffers)
+  const ActionDescription *action = m_Ctx.CurAction();
+  if((m_Options.exportMeshOBJ || m_Options.exportMeshRawBuffers) && action &&
+     (action->flags & (ActionFlags::Drawcall | ActionFlags::MeshDispatch)))
     ExportMesh();
   if(m_Options.exportResourceBuffers)
     ExportResourceBuffers();
@@ -329,7 +498,7 @@ QVariantMap DrawcallExporter::MakeDrawcallJSON() const
   root[lit("compute_pipeline")] = ToQStr(pipe.GetComputePipelineObject());
 
   QVariantMap shaders;
-  for(ShaderStage stage : {ShaderStage::Vertex, ShaderStage::Pixel})
+  for(ShaderStage stage : ActiveShaderStages())
   {
     QVariantMap shader;
     shader[lit("stage")] = StageShortName(stage);
@@ -363,7 +532,7 @@ QVariantMap DrawcallExporter::MakePipelineStateJSON() const
   root[lit("restart_index")] = pipe.GetRestartIndex();
 
   QVariantMap shaders;
-  for(ShaderStage stage : {ShaderStage::Vertex, ShaderStage::Pixel})
+  for(ShaderStage stage : ActiveShaderStages())
   {
     QVariantMap sh;
     sh[lit("stage")] = StageShortName(stage);
@@ -431,19 +600,21 @@ void DrawcallExporter::ExportTexturesAndSamplers()
 
   QVariantList textureMetadata;
 
-  if(m_Options.exportInputs)
+  if(m_Options.exportInputs || m_Options.exportOutputs)
   {
-    for(ShaderStage stage : {ShaderStage::Vertex, ShaderStage::Pixel})
+    for(ShaderStage stage : ActiveShaderStages())
     {
       const QString stageShort = StageShortName(stage);
-      ExportShaderTextures(stage, stageShort, lit("read_only"),
-                           m_Ctx.CurPipelineState().GetReadOnlyResources(
-                               stage, m_Options.onlyUsedDescriptors),
-                           textureMetadata);
-      ExportShaderTextures(stage, stageShort, lit("read_write"),
-                           m_Ctx.CurPipelineState().GetReadWriteResources(
-                               stage, m_Options.onlyUsedDescriptors),
-                           textureMetadata);
+      if(m_Options.exportInputs)
+        ExportShaderTextures(stage, stageShort, lit("read_only"),
+                             m_Ctx.CurPipelineState().GetReadOnlyResources(
+                                 stage, m_Options.onlyUsedDescriptors),
+                             textureMetadata);
+      if(m_Options.exportOutputs)
+        ExportShaderTextures(stage, stageShort, lit("read_write"),
+                             m_Ctx.CurPipelineState().GetReadWriteResources(
+                                 stage, m_Options.onlyUsedDescriptors),
+                             textureMetadata);
     }
   }
 
@@ -458,7 +629,7 @@ void DrawcallExporter::ExportTexturesAndSamplers()
   if(m_Options.exportSamplerState)
   {
     QVariantList samplers;
-    for(ShaderStage stage : {ShaderStage::Vertex, ShaderStage::Pixel})
+    for(ShaderStage stage : ActiveShaderStages())
     {
       const QString stageShort = StageShortName(stage);
       for(const UsedDescriptor &used :
@@ -488,8 +659,10 @@ void DrawcallExporter::ExportShaderTextures(ShaderStage stage, const QString &st
     if(!IsTextureResource(used.descriptor.resource))
       continue;
 
-    const QString binding = DescriptorBindingName(used, role == lit("read_write") ? lit("u") : lit("t"));
-    SaveTextureDescriptor(lit("input_texture"), role, stageShort, binding, used.descriptor,
+    const bool readWrite = role == lit("read_write");
+    const QString binding = DescriptorBindingName(used, readWrite ? lit("u") : lit("t"));
+    SaveTextureDescriptor(readWrite ? lit("output_texture") : lit("input_texture"), role,
+                          stageShort, binding, used.descriptor,
                           textureMetadata);
   }
 }
@@ -517,8 +690,8 @@ void DrawcallExporter::ExportOutputTextures(QVariantList &textureMetadata)
 
 void DrawcallExporter::ExportShaders()
 {
-  ExportShaderStage(ShaderStage::Vertex, lit("vs"));
-  ExportShaderStage(ShaderStage::Pixel, lit("ps"));
+  for(ShaderStage stage : ActiveShaderStages())
+    ExportShaderStage(stage, StageShortName(stage));
 }
 
 void DrawcallExporter::ExportShaderStage(ShaderStage stage, const QString &stageShort)
@@ -556,12 +729,55 @@ void DrawcallExporter::ExportShaderStage(ShaderStage stage, const QString &stage
     }
   }
 
-  rdcstr disasm;
-  m_Ctx.Replay().BlockInvoke([&disasm, &pipe, refl](IReplayController *r) {
-    disasm = r->DisassembleShader(pipe.GetGraphicsPipelineObject(), refl, "");
+  const ResourceId pipeline = PipelineObjectForStage(stage);
+  rdcarray<rdcstr> disasmTargets;
+  rdcstr defaultDisasm;
+  m_Ctx.Replay().BlockInvoke([&disasmTargets, &defaultDisasm, pipeline, refl](IReplayController *r) {
+    disasmTargets = r->GetDisassemblyTargets(pipeline != ResourceId());
+    defaultDisasm = r->DisassembleShader(pipeline, refl, "");
   });
 
-  if(disasm.empty())
+  QVariantList disasmTargetJSON;
+  QVariantList disasmExportJSON;
+  bool hlslDecompilerExported = false;
+  const QString defaultTarget =
+      disasmTargets.empty() ? lit("native") : ToQStr(disasmTargets[0]);
+
+  for(int i = 0; i < disasmTargets.count(); i++)
+  {
+    QVariantMap targetMeta;
+    targetMeta[lit("name")] = ToQStr(disasmTargets[i]);
+    targetMeta[lit("native_default")] = i == 0;
+    targetMeta[lit("contains_hlsl")] =
+        ToQStr(disasmTargets[i]).contains(lit("hlsl"), Qt::CaseInsensitive);
+    disasmTargetJSON.push_back(targetMeta);
+  }
+
+  auto recordDisassembly = [&](const QString &category, const QString &path,
+                               const QString &text, const QString &target,
+                               const QString &source) {
+    if(WriteTextFile(path, text))
+    {
+      QVariantMap meta;
+      meta[lit("stage")] = stageShort;
+      meta[lit("shader")] = ToQStr(refl->resourceId);
+      meta[lit("target")] = target;
+      meta[lit("source")] = source;
+      RecordFile(category, path, meta);
+
+      QVariantMap exported;
+      exported[lit("path")] = path;
+      exported[lit("category")] = category;
+      exported[lit("target")] = target;
+      exported[lit("source")] = source;
+      disasmExportJSON.push_back(exported);
+
+      if(category == lit("shader_disassembly_hlsl"))
+        hlslDecompilerExported = true;
+    }
+  };
+
+  if(defaultDisasm.empty())
   {
     QVariantMap meta;
     meta[lit("stage")] = stageShort;
@@ -571,13 +787,86 @@ void DrawcallExporter::ExportShaderStage(ShaderStage stage, const QString &stage
   else
   {
     const QString path = shaderDir + lit("/disassembly_default.txt");
-    if(WriteTextFile(path, ToQStr(disasm)))
+    recordDisassembly(lit("shader_disassembly"), path, ToQStr(defaultDisasm), defaultTarget,
+                      lit("renderdoc_default"));
+
+    const QString nativePath =
+        UniqueRelativePath(shaderDir, DisassemblyFileBase(lit("native"), defaultTarget), lit(".txt"));
+    recordDisassembly(lit("shader_disassembly_native"), nativePath, ToQStr(defaultDisasm),
+                      defaultTarget, lit("renderdoc"));
+  }
+
+  for(int i = 0; i < disasmTargets.count(); i++)
+  {
+    const rdcstr targetName = disasmTargets[i];
+    const QString target = ToQStr(targetName);
+    if(!target.contains(lit("hlsl"), Qt::CaseInsensitive))
+      continue;
+
+    rdcstr hlslDisasm;
+    m_Ctx.Replay().BlockInvoke([pipeline, refl, targetName, &hlslDisasm](IReplayController *r) {
+      hlslDisasm = r->DisassembleShader(pipeline, refl, targetName);
+    });
+
+    if(!hlslDisasm.empty())
     {
-      QVariantMap meta;
-      meta[lit("stage")] = stageShort;
-      meta[lit("shader")] = ToQStr(refl->resourceId);
-      RecordFile(lit("shader_disassembly"), path, meta);
+      const QString path =
+          UniqueRelativePath(shaderDir, DisassemblyFileBase(lit("hlsl"), target), lit(".txt"));
+      recordDisassembly(lit("shader_disassembly_hlsl"), path, ToQStr(hlslDisasm), target,
+                        lit("renderdoc"));
     }
+  }
+
+  for(const ShaderProcessingTool &processor : m_Ctx.Config().ShaderProcessors)
+  {
+    if(processor.input != refl->encoding || processor.output != ShaderEncoding::HLSL)
+      continue;
+
+    const QString target = ShaderProcessorTargetName(processor);
+    QVariantMap targetMeta;
+    targetMeta[lit("name")] = target;
+    targetMeta[lit("native_default")] = false;
+    targetMeta[lit("contains_hlsl")] = true;
+    targetMeta[lit("external_processor")] = true;
+    targetMeta[lit("tool")] = ToQStr(processor.tool);
+    targetMeta[lit("executable")] = ToQStr(processor.executable);
+    disasmTargetJSON.push_back(targetMeta);
+
+    ShaderToolOutput out = processor.DisassembleShader(m_Parent, refl, "");
+    if(out.result.empty())
+    {
+      if(!out.log.empty())
+      {
+        const QString logPath =
+            UniqueRelativePath(shaderDir, DisassemblyFileBase(lit("hlsl_log"), target), lit(".txt"));
+        recordDisassembly(lit("shader_disassembly_hlsl_log"), logPath, ToQStr(out.log), target,
+                          lit("shader_processor"));
+      }
+      continue;
+    }
+
+    const QString text = QString::fromUtf8((const char *)out.result.data(), (int)out.result.size());
+    if(text.trimmed().isEmpty())
+      continue;
+
+    const QString path =
+        UniqueRelativePath(shaderDir, DisassemblyFileBase(lit("hlsl"), target), lit(".txt"));
+    recordDisassembly(lit("shader_disassembly_hlsl"), path, text, target,
+                      lit("shader_processor"));
+  }
+
+  QVariantMap disasmRoot;
+  disasmRoot[lit("native_default_target")] = defaultTarget;
+  disasmRoot[lit("targets")] = disasmTargetJSON;
+  disasmRoot[lit("exports")] = disasmExportJSON;
+  disasmRoot[lit("hlsl_decompiler_exported")] = hlslDecompilerExported;
+  if(WriteJSONFile(shaderDir + lit("/disassembly_targets.json"), disasmRoot))
+  {
+    QVariantMap meta;
+    meta[lit("stage")] = stageShort;
+    meta[lit("shader")] = ToQStr(refl->resourceId);
+    RecordFile(lit("shader_disassembly_metadata"), shaderDir + lit("/disassembly_targets.json"),
+               meta);
   }
 
   if(m_Options.exportShaderRawBytes)
@@ -639,7 +928,7 @@ QVariantMap DrawcallExporter::MakeShaderJSON(const ShaderReflection *refl, Shade
   ret[lit("stage")] = StageShortName(stage);
   ret[lit("stage_name")] = ToQStr(stage, m_Ctx.APIProps().pipelineType);
   ret[lit("resource_id")] = refl ? ToQStr(refl->resourceId) : ToQStr(ResourceId());
-  ret[lit("pipeline_id")] = ToQStr(m_Ctx.CurPipelineState().GetGraphicsPipelineObject());
+  ret[lit("pipeline_id")] = ToQStr(PipelineObjectForStage(stage));
   ret[lit("entry_point")] = refl ? ToQStr(refl->entryPoint) : QString();
   ret[lit("encoding")] = refl ? ToQStr(refl->encoding) : QString();
   ret[lit("raw_byte_size")] = refl ? (uint)refl->rawBytes.size() : 0U;
@@ -1011,8 +1300,24 @@ QVariantList DrawcallExporter::MakeScissorList() const
 
 void DrawcallExporter::ExportConstantBuffers()
 {
-  ExportConstantBuffersForStage(ShaderStage::Vertex, lit("vs"));
-  ExportConstantBuffersForStage(ShaderStage::Pixel, lit("ps"));
+  m_ConstantBuffers.clear();
+  for(ShaderStage stage : ActiveShaderStages())
+    ExportConstantBuffersForStage(stage, StageShortName(stage));
+
+  QVariantMap root;
+  root[lit("notes")] =
+      lit("Constant buffer display_name prefers the RenderDoc Buffer column name when available. Unity/URP Z-bin and Tile buffers can appear here as constant buffers; they are exported for completeness but are usually low-priority renderer intermediate data for shader reconstruction.");
+  root[lit("buffers")] = m_ConstantBuffers;
+  if(WriteJSONFile(lit("ConstantBuffers/constant_buffers.json"), root))
+    RecordFile(lit("constant_buffer_index"), lit("ConstantBuffers/constant_buffers.json"));
+
+  QString readme;
+  readme += lit("# ConstantBuffers\n\n");
+  readme += lit("This directory contains active shader stage constant buffers for the selected event, including CS for compute dispatches.\n\n");
+  readme += lit("File names and `constant_buffers.json` use `display_name`, which prefers the same buffer object name shown in RenderDoc's Constant Buffers table. For example, `URP Z-Bin Buffer` and `URP Tile Buffer` should appear as `URP_Z-Bin_Buffer` and `URP_Tile_Buffer` in exported file names and index metadata.\n\n");
+  readme += lit("For shader reconstruction, most material/per-draw/per-camera constant buffers are high priority. Unity/URP z-bin, tile, cluster, light-list, and culling buffers are usually renderer intermediate data and should be treated as low priority unless the shader logic explicitly reads those values.\n");
+  if(WriteTextFile(lit("ConstantBuffers/README.md"), readme))
+    RecordFile(lit("constant_buffer_notes"), lit("ConstantBuffers/README.md"));
 }
 
 void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QString &stageShort)
@@ -1020,21 +1325,11 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
   const PipeState &pipe = m_Ctx.CurPipelineState();
   const ShaderReflection *refl = pipe.GetShaderReflection(stage);
   if(refl == NULL)
-  {
-    QVariantMap meta;
-    meta[lit("stage")] = stageShort;
-    RecordFailure(lit("constant_buffers"), lit("No shader reflection available"), meta);
     return;
-  }
 
   rdcarray<UsedDescriptor> cblocks = pipe.GetConstantBlocks(stage, m_Options.onlyUsedDescriptors);
   if(cblocks.empty())
-  {
-    QVariantMap meta;
-    meta[lit("stage")] = stageShort;
-    RecordFailure(lit("constant_buffers"), lit("No used constant buffers"), meta);
     return;
-  }
 
   EnsureDir(lit("ConstantBuffers/") + stageShort);
 
@@ -1053,14 +1348,18 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
 
     const ConstantBlock &block = refl->constantBlocks[slot];
     const QString binding = BindingName(lit("b"), slot);
-    const QString resourceName = !block.name.empty() ? ToQStr(block.name) : m_Ctx.GetResourceName(used.descriptor.resource);
+    const QString blockName = ToQStr(block.name);
+    const QString renderdocBufferName = m_Ctx.GetResourceName(used.descriptor.resource);
+    const QString displayName = ConstantBufferDisplayName(block, used);
+    const uint64_t rawLength = used.descriptor.byteSize ? used.descriptor.byteSize : block.byteSize;
+    const QVariantMap guidance = ConstantBufferGuidance(displayName, rawLength);
     const QString baseName =
-        MakeResourceBaseName(lit("cb"), stageShort, binding, used.descriptor.resource, resourceName);
+        MakeResourceBaseName(lit("cb"), stageShort, binding, used.descriptor.resource, displayName);
     const QString cbufDir = lit("ConstantBuffers/") + stageShort;
 
     ResourceId shader = pipe.GetShader(stage);
     rdcstr entry = pipe.GetShaderEntryPoint(stage);
-    ResourceId pipeline = pipe.GetGraphicsPipelineObject();
+    ResourceId pipeline = PipelineObjectForStage(stage);
     rdcarray<ShaderVariable> variables;
 
     m_Ctx.Replay().BlockInvoke([&](IReplayController *r) {
@@ -1071,6 +1370,22 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
     });
 
     QVariantMap cbufJSON = MakeConstantBlockJSON(block, used, stage, slot, arrayIdx, variables);
+    QVariantMap indexEntry;
+    indexEntry[lit("stage")] = stageShort;
+    indexEntry[lit("binding")] = binding;
+    indexEntry[lit("slot")] = slot;
+    indexEntry[lit("resource")] = ToQStr(used.descriptor.resource);
+    indexEntry[lit("display_name")] = displayName;
+    indexEntry[lit("block_name")] = blockName;
+    indexEntry[lit("renderdoc_buffer_name")] = renderdocBufferName;
+    indexEntry[lit("byte_offset")] = QString::number(used.descriptor.byteOffset);
+    indexEntry[lit("byte_size")] = QString::number(rawLength);
+    indexEntry[lit("shader_reconstruction_priority")] =
+        guidance[lit("shader_reconstruction_priority")];
+    indexEntry[lit("recommended_for_shader_reconstruction")] =
+        guidance[lit("recommended_for_shader_reconstruction")];
+    indexEntry[lit("constant_buffer_guidance")] = guidance;
+
     QString jsonPath = UniqueRelativePath(cbufDir, baseName, lit(".json"));
     if(WriteJSONFile(jsonPath, cbufJSON))
     {
@@ -1078,7 +1393,15 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
       meta[lit("stage")] = stageShort;
       meta[lit("binding")] = binding;
       meta[lit("resource")] = ToQStr(used.descriptor.resource);
+      meta[lit("display_name")] = displayName;
+      meta[lit("block_name")] = blockName;
+      meta[lit("renderdoc_buffer_name")] = renderdocBufferName;
+      meta[lit("shader_reconstruction_priority")] =
+          guidance[lit("shader_reconstruction_priority")];
+      meta[lit("recommended_for_shader_reconstruction")] =
+          guidance[lit("recommended_for_shader_reconstruction")];
       RecordFile(lit("constant_buffer_json"), jsonPath, meta);
+      indexEntry[lit("json_path")] = jsonPath;
     }
 
     QString csvPath = UniqueRelativePath(cbufDir, baseName + lit(".variables"), lit(".csv"));
@@ -1095,7 +1418,15 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
       meta[lit("stage")] = stageShort;
       meta[lit("binding")] = binding;
       meta[lit("resource")] = ToQStr(used.descriptor.resource);
+      meta[lit("display_name")] = displayName;
+      meta[lit("block_name")] = blockName;
+      meta[lit("renderdoc_buffer_name")] = renderdocBufferName;
+      meta[lit("shader_reconstruction_priority")] =
+          guidance[lit("shader_reconstruction_priority")];
+      meta[lit("recommended_for_shader_reconstruction")] =
+          guidance[lit("recommended_for_shader_reconstruction")];
       RecordFile(lit("constant_buffer_csv"), csvPath, meta);
+      indexEntry[lit("csv_path")] = csvPath;
     }
     else
     {
@@ -1103,7 +1434,6 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
                     QFormatStr("Couldn't write %1: %2").arg(csvPath).arg(csv.errorString()));
     }
 
-    const uint64_t rawLength = used.descriptor.byteSize ? used.descriptor.byteSize : block.byteSize;
     if(used.descriptor.resource != ResourceId() && rawLength > 0)
     {
       bytebuf raw;
@@ -1120,9 +1450,17 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
         meta[lit("stage")] = stageShort;
         meta[lit("binding")] = binding;
         meta[lit("resource")] = ToQStr(used.descriptor.resource);
+        meta[lit("display_name")] = displayName;
+        meta[lit("block_name")] = blockName;
+        meta[lit("renderdoc_buffer_name")] = renderdocBufferName;
         meta[lit("byte_offset")] = QString::number(used.descriptor.byteOffset);
         meta[lit("byte_size")] = QString::number(rawLength);
+        meta[lit("shader_reconstruction_priority")] =
+            guidance[lit("shader_reconstruction_priority")];
+        meta[lit("recommended_for_shader_reconstruction")] =
+            guidance[lit("recommended_for_shader_reconstruction")];
         RecordFile(lit("constant_buffer_raw"), rawPath, meta);
+        indexEntry[lit("raw_path")] = rawPath;
       }
     }
     else
@@ -1134,6 +1472,8 @@ void DrawcallExporter::ExportConstantBuffersForStage(ShaderStage stage, const QS
       RecordFailure(lit("constant_buffer_raw"),
                     lit("Constant buffer has no buffer resource or explicit byte size"), meta);
     }
+
+    m_ConstantBuffers.push_back(indexEntry);
   }
 }
 
@@ -1293,10 +1633,10 @@ void DrawcallExporter::ExportResourceBuffers()
   const uint64_t maxExportBytes = 64ULL * 1024ULL * 1024ULL;
   QVariantList buffersJSON;
 
-  for(ShaderStage stage : {ShaderStage::Vertex, ShaderStage::Pixel})
+  for(ShaderStage stage : ActiveShaderStages())
   {
     const QString stageShort = StageShortName(stage);
-    auto processDescriptors = [&](const rdcarray<UsedDescriptor> &descriptors) {
+    auto processDescriptors = [&](const rdcarray<UsedDescriptor> &descriptors, bool readWrite) {
       for(const UsedDescriptor &used : descriptors)
       {
         ResourceId id = used.descriptor.resource;
@@ -1310,6 +1650,7 @@ void DrawcallExporter::ExportResourceBuffers()
         if(length == 0 && offset < buf->length)
           length = buf->length - offset;
 
+        const uint64_t requestedLength = length;
         if(length == 0)
         {
           QVariantMap meta;
@@ -1332,19 +1673,32 @@ void DrawcallExporter::ExportResourceBuffers()
           raw = r->GetBufferData(id, offset, length);
         });
 
-        const QString baseName =
-            MakeResourceBaseName(lit("buf"), stageShort, binding, id, m_Ctx.GetResourceName(id));
+        const QString shaderResourceName = ShaderResourceReflectionName(stage, used, readWrite);
+        const QString renderdocResourceName = m_Ctx.GetResourceName(id);
+        const QString displayName = ResourceBufferDisplayName(stage, used, readWrite);
+        const QString baseName = MakeResourceBaseName(lit("buf"), stageShort, binding, id, displayName);
         const QString path = UniqueRelativePath(lit("ResourceBuffers"), baseName, lit(".raw.bin"));
+        const QVariantMap guidance = ResourceBufferGuidance(displayName, requestedLength, truncated);
 
         QVariantMap meta;
         meta[lit("stage")] = stageShort;
         meta[lit("binding")] = binding;
         meta[lit("resource")] = ToQStr(id);
-        meta[lit("original_name")] = m_Ctx.GetResourceName(id);
+        meta[lit("display_name")] = displayName;
+        meta[lit("shader_resource_name")] = shaderResourceName;
+        meta[lit("renderdoc_resource_name")] = renderdocResourceName;
+        meta[lit("original_name")] = renderdocResourceName;
         meta[lit("descriptor")] = MakeUsedDescriptorJSON(used);
         meta[lit("byte_offset")] = QString::number(offset);
+        meta[lit("requested_byte_size")] = QString::number(requestedLength);
+        meta[lit("exported_byte_size")] = QString::number(length);
         meta[lit("byte_size")] = QString::number(length);
         meta[lit("truncated")] = truncated;
+        meta[lit("shader_reconstruction_priority")] =
+            guidance[lit("shader_reconstruction_priority")];
+        meta[lit("recommended_for_shader_reconstruction")] =
+            guidance[lit("recommended_for_shader_reconstruction")];
+        meta[lit("resource_buffer_guidance")] = guidance;
 
         if(WriteBytesFile(path, raw))
         {
@@ -1356,16 +1710,29 @@ void DrawcallExporter::ExportResourceBuffers()
     };
 
     processDescriptors(
-        m_Ctx.CurPipelineState().GetReadOnlyResources(stage, m_Options.onlyUsedDescriptors));
+        m_Ctx.CurPipelineState().GetReadOnlyResources(stage, m_Options.onlyUsedDescriptors), false);
     processDescriptors(
-        m_Ctx.CurPipelineState().GetReadWriteResources(stage, m_Options.onlyUsedDescriptors));
+        m_Ctx.CurPipelineState().GetReadWriteResources(stage, m_Options.onlyUsedDescriptors), true);
   }
 
   QVariantMap root;
   root[lit("max_export_bytes")] = QString::number(maxExportBytes);
+  root[lit("priority_notes")] =
+      lit("ResourceBuffers are SRV/UAV/raw buffers. For shader reconstruction, inspect ConstantBuffers, textures, shader code, and pipeline state first. Unity/URP z-bin, tile, cluster, light-list, and culling buffers are normally low-priority intermediate data unless the shader logic explicitly depends on them.");
   root[lit("buffers")] = buffersJSON;
   if(WriteJSONFile(lit("ResourceBuffers/resource_buffers.json"), root))
     RecordFile(lit("resource_buffer_metadata"), lit("ResourceBuffers/resource_buffers.json"));
+
+  QString readme;
+  readme += lit("# ResourceBuffers\n\n");
+  readme += lit("These files are raw SRV/UAV buffer ranges used by the selected active shader stages, including CS for compute dispatches. They are kept for completeness, but they are usually secondary evidence for shader reconstruction.\n\n");
+  readme += lit("Use priority:\n\n");
+  readme += lit("- High: `ConstantBuffers/`, `Shaders/`, input/output textures, mesh OBJ/raw buffers, and `pipeline_state.html/json`.\n");
+  readme += lit("- Medium: Resource buffers whose shader resource name is directly referenced by the HLSL/DXBC logic.\n");
+  readme += lit("- Low: Unity/URP z-bin, tile, cluster, light-list, culling, and other large intermediate buffers. These often describe renderer-side light/binning data and usually do not need to be read unless the restored shader explicitly indexes them.\n\n");
+  readme += lit("See `resource_buffers.json` for `display_name`, `shader_resource_name`, byte ranges, truncation status, and `shader_reconstruction_priority` for each exported buffer.\n");
+  if(WriteTextFile(lit("ResourceBuffers/README.md"), readme))
+    RecordFile(lit("resource_buffer_notes"), lit("ResourceBuffers/README.md"));
 }
 
 QVariantMap DrawcallExporter::MakeConstantBlockJSON(const ConstantBlock &block,
@@ -1379,6 +1746,9 @@ QVariantMap DrawcallExporter::MakeConstantBlockJSON(const ConstantBlock &block,
   ret[lit("slot")] = slot;
   ret[lit("array_index")] = arrayIdx;
   ret[lit("name")] = ToQStr(block.name);
+  ret[lit("display_name")] = ConstantBufferDisplayName(block, used);
+  ret[lit("block_name")] = ToQStr(block.name);
+  ret[lit("renderdoc_buffer_name")] = m_Ctx.GetResourceName(used.descriptor.resource);
   ret[lit("fixed_bind_number")] = block.fixedBindNumber;
   ret[lit("fixed_bind_set_or_space")] = block.fixedBindSetOrSpace;
   ret[lit("bind_array_size")] = block.bindArraySize;
@@ -1390,6 +1760,9 @@ QVariantMap DrawcallExporter::MakeConstantBlockJSON(const ConstantBlock &block,
   ret[lit("descriptor_type")] = ToQStr(used.descriptor.type);
   ret[lit("descriptor_byte_offset")] = QString::number(used.descriptor.byteOffset);
   ret[lit("descriptor_byte_size")] = QString::number(used.descriptor.byteSize);
+  ret[lit("constant_buffer_guidance")] =
+      ConstantBufferGuidance(ret[lit("display_name")].toString(),
+                             used.descriptor.byteSize ? used.descriptor.byteSize : block.byteSize);
   ret[lit("variables")] = MakeShaderVariableList(variables);
   return ret;
 }
@@ -1467,6 +1840,158 @@ QString DrawcallExporter::DescriptorBindingName(const UsedDescriptor &used,
   if(used.access.arrayElement > 0)
     binding += QFormatStr("_a%1").arg(used.access.arrayElement);
   return binding;
+}
+
+QString DrawcallExporter::ConstantBufferDisplayName(const ConstantBlock &block,
+                                                    const UsedDescriptor &used) const
+{
+  const QString blockName = ToQStr(block.name).trimmed();
+  const QString bufferName = m_Ctx.GetResourceName(used.descriptor.resource).trimmed();
+
+  if(bufferName.isEmpty())
+    return blockName.isEmpty() ? DescriptorBindingName(used, lit("b")) : blockName;
+
+  const QString lowerBlock = blockName.toLower();
+  const bool genericBlockName =
+      blockName.isEmpty() || lowerBlock.startsWith(lit("cbuffer")) ||
+      lowerBlock.startsWith(lit("constantbuffer")) || lowerBlock == DescriptorBindingName(used, lit("b"));
+
+  if(genericBlockName || blockName == bufferName)
+    return bufferName;
+
+  return blockName + lit("__") + bufferName;
+}
+
+QVariantMap DrawcallExporter::ConstantBufferGuidance(const QString &displayName,
+                                                     uint64_t byteSize) const
+{
+  QVariantMap ret;
+  QVariantList reasons;
+  const QString lower = displayName.toLower();
+
+  auto note = [&reasons](const QString &text) { reasons.push_back(text); };
+
+  bool lowPriority = false;
+  if(lower.contains(lit("z-bin")) || lower.contains(lit("z_bin")) ||
+     lower.contains(lit("z bin")))
+  {
+    lowPriority = true;
+    note(lit("Unity/URP z-bin constant buffer is usually renderer-side binning data."));
+  }
+
+  if(lower.contains(lit("tile")) || lower.contains(lit("cluster")) ||
+     lower.contains(lit("light list")) || lower.contains(lit("lightlist")) ||
+     lower.contains(lit("culling")))
+  {
+    lowPriority = true;
+    note(lit("Tile/cluster/light-list/culling constant buffers are usually renderer intermediate data."));
+  }
+
+  if(byteSize >= 1024ULL * 1024ULL)
+    note(lit("Large constant buffer; inspect after material/per-draw/per-camera buffers."));
+
+  ret[lit("shader_reconstruction_priority")] = lowPriority ? lit("low") : lit("high");
+  ret[lit("recommended_for_shader_reconstruction")] = !lowPriority;
+  ret[lit("guidance")] =
+      lowPriority ? lit("Usually not needed for Unity shader reconstruction unless shader code directly reads values from this buffer.")
+                  : lit("Primary shader reconstruction input; inspect variable values and layout.");
+  ret[lit("reasons")] = reasons;
+  return ret;
+}
+
+QString DrawcallExporter::ShaderProcessorTargetName(const ShaderProcessingTool &processor) const
+{
+  return lit("%1 (%2)").arg(ToQStr(processor.output)).arg(ToQStr(processor.name));
+}
+
+QString DrawcallExporter::DisassemblyFileBase(const QString &kind, const QString &targetName) const
+{
+  QString base = lit("disassembly_") + SafeName(kind, lit("target"));
+  if(!targetName.isEmpty())
+    base += lit("_") + SafeName(targetName, lit("target"));
+  return SafeName(base, lit("disassembly"));
+}
+
+QString DrawcallExporter::ShaderResourceReflectionName(ShaderStage stage, const UsedDescriptor &used,
+                                                       bool readWrite) const
+{
+  if(used.access.index == DescriptorAccess::NoShaderBinding)
+    return QString();
+
+  const ShaderReflection *refl = m_Ctx.CurPipelineState().GetShaderReflection(stage);
+  if(refl == NULL)
+    return QString();
+
+  const rdcarray<ShaderResource> &resources =
+      readWrite ? refl->readWriteResources : refl->readOnlyResources;
+  if(used.access.index >= resources.size())
+    return QString();
+
+  const ShaderResource &resource = resources[used.access.index];
+  QString name = ToQStr(resource.name);
+  if(name.isEmpty())
+    return QString();
+
+  if(resource.bindArraySize > 1 && used.access.arrayElement > 0)
+    name += QFormatStr("[%1]").arg(used.access.arrayElement);
+
+  return name;
+}
+
+QString DrawcallExporter::ResourceBufferDisplayName(ShaderStage stage, const UsedDescriptor &used,
+                                                    bool readWrite) const
+{
+  const QString reflectionName = ShaderResourceReflectionName(stage, used, readWrite);
+  const QString resourceName = m_Ctx.GetResourceName(used.descriptor.resource).trimmed();
+
+  if(!reflectionName.isEmpty() && !resourceName.isEmpty() && reflectionName != resourceName)
+    return reflectionName + lit("__") + resourceName;
+  if(!reflectionName.isEmpty())
+    return reflectionName;
+  if(!resourceName.isEmpty())
+    return resourceName;
+
+  return DescriptorBindingName(used, readWrite ? lit("u") : lit("r"));
+}
+
+QVariantMap DrawcallExporter::ResourceBufferGuidance(const QString &displayName, uint64_t byteSize,
+                                                     bool truncated) const
+{
+  QVariantMap ret;
+  QVariantList reasons;
+  const QString lower = displayName.toLower();
+
+  auto note = [&reasons](const QString &text) { reasons.push_back(text); };
+
+  bool lowPriority = false;
+  if(lower.contains(lit("z-bin")) || lower.contains(lit("z_bin")) ||
+     lower.contains(lit("z bin")))
+  {
+    lowPriority = true;
+    note(lit("Unity/URP z-bin buffer is normally a lighting/culling intermediate buffer."));
+  }
+
+  if(lower.contains(lit("tile")) || lower.contains(lit("cluster")) ||
+     lower.contains(lit("light list")) || lower.contains(lit("lightlist")) ||
+     lower.contains(lit("culling")))
+  {
+    lowPriority = true;
+    note(lit("Tile/cluster/light-list style buffers are usually engine-side culling data, not material inputs."));
+  }
+
+  const bool largeFile = byteSize >= 8ULL * 1024ULL * 1024ULL || truncated;
+  if(largeFile)
+    note(lit("Large raw buffer; inspect only if the shader code directly indexes this resource."));
+
+  ret[lit("shader_reconstruction_priority")] = lowPriority ? lit("low") : lit("medium");
+  ret[lit("recommended_for_shader_reconstruction")] = !lowPriority;
+  ret[lit("large_file")] = largeFile;
+  ret[lit("guidance")] =
+      lowPriority
+          ? lit("Usually not needed for Unity shader reconstruction unless the shader logic explicitly depends on this buffer.")
+          : lit("Optional context. Prefer constant buffers, textures, shader code, and pipeline state first.");
+  ret[lit("reasons")] = reasons;
+  return ret;
 }
 
 QString DrawcallExporter::FileTypeExtension(FileType type) const
@@ -1908,8 +2433,272 @@ void DrawcallExporter::WriteShaderVariablesCSV(QTextStream &stream,
   }
 }
 
+QVariantMap DrawcallExporter::MakeShaderReconstructionIndex() const
+{
+  QVariantMap root;
+  root[lit("schema")] = lit("renderdoc.unity_shader_reconstruction_index.v1");
+  root[lit("capture_file")] = ToQStr(m_Ctx.GetCaptureFilename());
+  root[lit("event_id")] = m_Ctx.CurEvent();
+  root[lit("api")] = ToQStr(m_Ctx.APIProps().pipelineType);
+
+  QVariantMap targetEnvironment;
+  targetEnvironment[lit("unity_version")] = lit("Unity 6.0 (6000.0.62f1)");
+  targetEnvironment[lit("urp_version")] = lit("URP 17.0.4");
+  targetEnvironment[lit("platform")] = lit("Mobile game");
+  targetEnvironment[lit("primary_graphics_api")] = lit("Vulkan");
+  targetEnvironment[lit("compatibility_graphics_api")] = lit("OpenGLES");
+  targetEnvironment[lit("rendering_path")] = lit("Deferred");
+  targetEnvironment[lit("render_graph")] = lit("Supported");
+  targetEnvironment[lit("gpu_resident_drawer")] =
+      lit("Supported; preserve instancing/instance ID assumptions.");
+  root[lit("target_environment")] = targetEnvironment;
+
+  QVariantMap priorityMeaning;
+  priorityMeaning[lit("high")] =
+      lit("Core evidence for reconstructing Unity/URP shader code and validating output.");
+  priorityMeaning[lit("medium")] =
+      lit("Supporting evidence; inspect after high-priority files or when code references it.");
+  priorityMeaning[lit("low")] =
+      lit("Usually renderer intermediate data or logs; keep available but do not start here.");
+  root[lit("priority_meaning")] = priorityMeaning;
+
+  QVariantList high;
+  QVariantList medium;
+  QVariantList low;
+  QVariantMap phases;
+
+  auto compactFile = [](const QVariantMap &file) {
+    QVariantMap item;
+    const QStringList keys = {
+        lit("category"),
+        lit("path"),
+        lit("shader_reconstruction_priority"),
+        lit("shader_reconstruction_phase"),
+        lit("shader_reconstruction_role"),
+        lit("stage"),
+        lit("binding"),
+        lit("display_name"),
+        lit("block_name"),
+        lit("renderdoc_buffer_name"),
+        lit("shader_resource_name"),
+        lit("resource"),
+        lit("byte_size"),
+        lit("requested_byte_size"),
+        lit("exported_byte_size"),
+        lit("truncated"),
+        lit("recommended_for_shader_reconstruction"),
+    };
+
+    for(const QString &key : keys)
+      if(file.contains(key))
+        item[key] = file[key];
+
+    return item;
+  };
+
+  for(const QVariant &fileVar : m_Files)
+  {
+    const QVariantMap file = fileVar.toMap();
+    const QVariantMap item = compactFile(file);
+    const QString priority = file[lit("shader_reconstruction_priority")].toString();
+    const QString phase = file[lit("shader_reconstruction_phase")].toString();
+
+    if(priority == lit("high"))
+      high.push_back(item);
+    else if(priority == lit("low"))
+      low.push_back(item);
+    else
+      medium.push_back(item);
+
+    QVariantList phaseFiles = phases[phase].toList();
+    phaseFiles.push_back(item);
+    phases[phase] = phaseFiles;
+  }
+
+  root[lit("high_priority")] = high;
+  root[lit("medium_priority")] = medium;
+  root[lit("low_priority")] = low;
+  root[lit("by_phase")] = phases;
+
+  QVariantList lowPriorityPatterns;
+  lowPriorityPatterns.push_back(lit("Unity/URP Z-bin buffers"));
+  lowPriorityPatterns.push_back(lit("Unity/URP Tile buffers"));
+  lowPriorityPatterns.push_back(lit("Cluster/light-list/culling buffers"));
+  lowPriorityPatterns.push_back(lit("Large SRV/UAV raw buffers not directly indexed by shader code"));
+  root[lit("low_priority_patterns")] = lowPriorityPatterns;
+
+  return root;
+}
+
+QString DrawcallExporter::LoadShaderReconstructionGoalTemplate(QString *sourcePath) const
+{
+  QStringList candidateRoots;
+  candidateRoots << QDir::currentPath();
+
+  QDir appDir(QCoreApplication::applicationDirPath());
+  for(int i = 0; i < 8; i++)
+  {
+    candidateRoots << appDir.absolutePath();
+    if(!appDir.cdUp())
+      break;
+  }
+
+  for(const QString &root : candidateRoots)
+  {
+    const QString path =
+        QDir(root).filePath(lit("AIDoc/UnityShaderReconstructionGoalTemplate.md"));
+    QFile file(path);
+    if(!file.open(QIODevice::ReadOnly | QIODevice::Text))
+      continue;
+
+    QTextStream stream(&file);
+    stream.setCodec("UTF-8");
+    if(sourcePath)
+      *sourcePath = QFileInfo(path).absoluteFilePath();
+    return stream.readAll();
+  }
+
+  if(sourcePath)
+    *sourcePath = lit("built-in fallback");
+  return DefaultShaderReconstructionGoalTemplate();
+}
+
+QString DrawcallExporter::DefaultShaderReconstructionGoalTemplate() const
+{
+  QString text;
+  text += lit("# Goal: Reconstruct Unity URP Shader From RenderDoc Drawcall Export\n\n");
+  text += lit("Objective: Reconstruct a Unity 6 URP shader/HLSL implementation for the selected RenderDoc drawcall export in `{{EXPORT_DIR}}`.\n\n");
+  text += lit("Target environment:\n\n");
+  text += lit("- Unity: {{UNITY_VERSION}}\n");
+  text += lit("- URP: {{URP_VERSION}}\n");
+  text += lit("- Platform: {{PLATFORM}}\n");
+  text += lit("- Primary graphics API: {{PRIMARY_GRAPHICS_API}}\n");
+  text += lit("- Compatibility graphics API: {{COMPATIBILITY_GRAPHICS_API}}\n");
+  text += lit("- Rendering path: {{RENDERING_PATH}}\n");
+  text += lit("- Render Graph: {{RENDER_GRAPH}}\n");
+  text += lit("- GPU Resident Drawer: {{GPU_RESIDENT_DRAWER}}\n\n");
+  text += lit("Start by reading `shader_reconstruction_index.json`, `AGENTS.md`, `drawcall.json`, `pipeline_state.html`, shader disassembly files, `ConstantBuffers/constant_buffers.json`, texture metadata, sampler metadata, and mesh metadata.\n\n");
+  text += lit("Deliverables:\n\n");
+  text += lit("- Reconstructed Unity shader source suitable for URP 17.0.4.\n");
+  text += lit("- Mapping notes from exported RenderDoc bindings to Unity shader properties, cbuffers, textures, samplers, varyings, and passes.\n");
+  text += lit("- A short uncertainty list for any inferred behavior.\n\n");
+  text += lit("Completion criteria:\n\n");
+  text += lit("- Shader logic is cross-checked against native DXBC/DXIL disassembly.\n");
+  text += lit("- HLSL decompiler output is treated as a draft, not ground truth.\n");
+  text += lit("- Low-priority URP Z-bin, Tile, cluster, light-list, culling, and large intermediate buffers are ignored unless shader code directly reads them.\n");
+  return text;
+}
+
+QString DrawcallExporter::RenderShaderReconstructionGoalTemplate(const QString &templateText,
+                                                                 const QString &sourcePath) const
+{
+  QString rendered = templateText;
+  QMap<QString, QString> values;
+  values[lit("EXPORT_DIR")] = QDir::toNativeSeparators(m_ExportDir);
+  values[lit("CAPTURE_FILE")] = QDir::toNativeSeparators(ToQStr(m_Ctx.GetCaptureFilename()));
+  values[lit("EVENT_ID")] = QString::number(m_Ctx.CurEvent());
+  values[lit("SELECTED_EVENT_ID")] = QString::number(m_Ctx.CurSelectedEvent());
+  values[lit("API")] = ToQStr(m_Ctx.APIProps().pipelineType);
+  values[lit("UNITY_VERSION")] = lit("Unity 6.0 (6000.0.62f1)");
+  values[lit("URP_VERSION")] = lit("URP 17.0.4");
+  values[lit("PLATFORM")] = lit("Mobile game");
+  values[lit("PRIMARY_GRAPHICS_API")] = lit("Vulkan");
+  values[lit("COMPATIBILITY_GRAPHICS_API")] = lit("OpenGLES");
+  values[lit("RENDERING_PATH")] = lit("Deferred");
+  values[lit("RENDER_GRAPH")] = lit("Supported");
+  values[lit("GPU_RESIDENT_DRAWER")] =
+      lit("Supported; preserve instancing and instance ID assumptions.");
+  values[lit("TEMPLATE_SOURCE")] = QDir::toNativeSeparators(sourcePath);
+
+  for(auto it = values.begin(); it != values.end(); ++it)
+    rendered.replace(lit("{{") + it.key() + lit("}}"), it.value());
+
+  return rendered;
+}
+
+void DrawcallExporter::WriteShaderReconstructionDocs()
+{
+  QString templateSource;
+  const QString goalTemplate = LoadShaderReconstructionGoalTemplate(&templateSource);
+  const QString goal = RenderShaderReconstructionGoalTemplate(goalTemplate, templateSource);
+  QVariantMap goalMeta;
+  goalMeta[lit("template_source")] = templateSource;
+  if(WriteTextFile(lit("UnityShaderReconstructionGoal.md"), goal))
+    RecordFile(lit("shader_reconstruction_goal"), lit("UnityShaderReconstructionGoal.md"),
+               goalMeta);
+
+  QString agents;
+  agents += lit("# AGENTS.md\n\n");
+  agents += lit("This directory is a RenderDoc current-drawcall export prepared for Unity/URP shader reconstruction.\n\n");
+  agents += QFormatStr("- Capture: `%1`\n").arg(ToQStr(m_Ctx.GetCaptureFilename()));
+  agents += QFormatStr("- Event ID: `%1`\n").arg(m_Ctx.CurEvent());
+  agents += QFormatStr("- API: `%1`\n\n").arg(ToQStr(m_Ctx.APIProps().pipelineType));
+  agents += lit("## Target Environment\n\n");
+  agents += lit("- Unity: Unity 6.0 (6000.0.62f1)\n");
+  agents += lit("- URP: 17.0.4\n");
+  agents += lit("- Platform: mobile game\n");
+  agents += lit("- Graphics API: Vulkan primary, OpenGLES compatible\n");
+  agents += lit("- Rendering path: Deferred\n");
+  agents += lit("- Render Graph: supported\n");
+  agents += lit("- GPU Resident Drawer: supported; preserve instanced drawing and instance ID assumptions.\n\n");
+  agents += lit("## Codex Goal Entry\n\n");
+  agents += lit("From this export directory, start Codex with `/goal UnityShaderReconstructionGoal.md`. That goal file is generated from the project template `AIDoc/UnityShaderReconstructionGoalTemplate.md` when available.\n\n");
+  agents += lit("## Read Order\n\n");
+  agents += lit("1. `UnityShaderReconstructionGoal.md` for the concrete Codex objective and deliverables.\n");
+  agents += lit("2. `shader_reconstruction_index.json` for the priority-grouped file map.\n");
+  agents += lit("3. `drawcall.json`, `pipeline_state.html`, and `pipeline_state.json` for event, topology, bindings, render targets, and fixed-function state.\n");
+  agents += lit("4. `Shaders/*`: read all active stages. For compute GBuffer paths, `Shaders/cs` is primary. Prefer `disassembly_hlsl_*.txt` when present, then cross-check against `disassembly_native_*.txt` or `disassembly_default.txt`.\n");
+  agents += lit("5. `ConstantBuffers/constant_buffers.json`, then high-priority `ConstantBuffers/*/*.json` or `.csv` for decoded parameters, including `ConstantBuffers/cs` for compute dispatches.\n");
+  agents += lit("6. `Textures/Metadata/textures.json`, input textures, output textures, compute RWTexture/UAV GBuffer outputs, and `Textures/Metadata/samplers.json`.\n");
+  agents += lit("7. `Mesh/mesh_postvs.obj`, `Mesh/mesh_postvs.json`, and `Mesh/vertex_input_layout.json` for geometry validation.\n");
+  agents += lit("8. `ResourceBuffers/` only after shader code proves a specific SRV/UAV buffer is required.\n\n");
+  agents += lit("## Priority Policy\n\n");
+  agents += lit("- High priority: shader code/disassembly, pipeline state, decoded constant buffers, bound textures/samplers, render targets, and mesh layout/post-VS geometry.\n");
+  agents += lit("- Medium priority: raw shader bytecode, raw cbuffer bytes, raw mesh buffers, and SRV/UAV resource buffers that may be directly referenced.\n");
+  agents += lit("- Low priority: Unity/URP Z-bin, Tile, cluster, light-list, culling, and large intermediate buffers unless the shader directly reads them.\n\n");
+  agents += lit("## Rules For Reconstruction\n\n");
+  agents += lit("- Do not start from large raw buffers. Start from shader code, bindings, decoded cbuffers, textures, samplers, and outputs.\n");
+  agents += lit("- Treat HLSL decompiler output as a readable draft, not ground truth. Resolve conflicts with native DXBC/DXIL disassembly and reflection metadata.\n");
+  agents += lit("- Keep Unity/URP engine-side intermediate buffers documented but optional unless a binding name or instruction path proves they influence the material result.\n");
+  agents += lit("- Reconstruct Unity properties and CBUFFER layouts from decoded constant buffers and reflection names before inferring artistic parameters.\n");
+  agents += lit("- Use output textures and post-transform mesh data as validation targets for the reconstructed shader.\n");
+  if(WriteTextFile(lit("AGENTS.md"), agents))
+    RecordFile(lit("shader_reconstruction_agent_guide"), lit("AGENTS.md"));
+
+  QString workflow;
+  workflow += lit("# Unity Shader Reconstruction Workflow\n\n");
+  workflow += lit("Target Unity stack: Unity 6.0 (6000.0.62f1), URP 17.0.4, mobile, Vulkan primary with OpenGLES compatibility, Deferred, Render Graph supported, GPU Resident Drawer/instanced drawing supported.\n\n");
+  workflow += lit("Codex entry: run `/goal UnityShaderReconstructionGoal.md` from this export directory.\n\n");
+  workflow += lit("## 1. Orient The Drawcall\n\n");
+  workflow += lit("Read `drawcall.json` and `pipeline_state.html/json`. Identify the selected event, draw/dispatch topology, render targets or UAV outputs, depth target if present, active shader IDs, and descriptor bindings.\n\n");
+  workflow += lit("## 2. Recover Shader Logic\n\n");
+  workflow += lit("Read `Shaders/*/disassembly_targets.json` for every active stage. If the event is a compute dispatch, start with `Shaders/cs`. If `disassembly_hlsl_*.txt` exists, use it as the first-pass HLSL draft. Always compare control flow, resource loads, UAV writes, texture samples, and arithmetic with `disassembly_native_*.txt` or `disassembly_default.txt`.\n\n");
+  workflow += lit("## 3. Map Parameters\n\n");
+  workflow += lit("Read `ConstantBuffers/constant_buffers.json`. Prioritize entries marked `high`. Use each cbuffer JSON/CSV to recover variable names, layout, numeric values, matrices, vectors, feature toggles, and Unity-style property candidates.\n\n");
+  workflow += lit("## 4. Map Textures And Samplers\n\n");
+  workflow += lit("Read `Textures/Metadata/textures.json` and `samplers.json`. Map SRV/UAV names and slots to Unity `TEXTURE2D`, `RWTexture2D`, `SAMPLER`, render-target, depth, GBuffer, and intermediate texture declarations. Compute `read_write` textures exported under `Textures/Outputs` are high-priority output evidence. Use exported images for material evidence.\n\n");
+  workflow += lit("## 5. Map Geometry Inputs\n\n");
+  workflow += lit("Read `Mesh/vertex_input_layout.json` and `Mesh/mesh_postvs.json`. Use OBJ output to validate clip/world/object-space assumptions and vertex-stage reconstruction.\n\n");
+  workflow += lit("## 6. Handle Optional Buffers\n\n");
+  workflow += lit("Read `ResourceBuffers/resource_buffers.json` only for buffers directly referenced by shader code. Treat URP Z-bin, Tile, cluster, light-list, and culling data as low priority unless the shader explicitly depends on their values.\n\n");
+  workflow += lit("## 7. Produce The Reconstructed Shader\n\n");
+  workflow += lit("Write a Unity-compatible shader/HLSL reconstruction with declarations for textures, samplers, cbuffers, vertex inputs, interpolators, and passes. Note any uncertain mapping and cite the source file paths used.\n");
+  if(WriteTextFile(lit("UnityShaderReconstructionWorkflow.md"), workflow))
+    RecordFile(lit("shader_reconstruction_workflow"),
+               lit("UnityShaderReconstructionWorkflow.md"));
+
+  const QString indexPath = lit("shader_reconstruction_index.json");
+  if(WriteJSONFile(indexPath, MakeShaderReconstructionIndex()))
+  {
+    RecordFile(lit("shader_reconstruction_index"), indexPath);
+    WriteJSONFile(indexPath, MakeShaderReconstructionIndex());
+  }
+}
+
 void DrawcallExporter::WriteManifestAndSummary()
 {
+  WriteShaderReconstructionDocs();
+
   QVariantMap root;
   root[lit("schema")] = lit("renderdoc.current_drawcall_export.v1");
   root[lit("capture_file")] = ToQStr(m_Ctx.GetCaptureFilename());
@@ -1930,6 +2719,16 @@ void DrawcallExporter::WriteManifestAndSummary()
   summary += QFormatStr("- API: `%1`\n").arg(ToQStr(m_Ctx.APIProps().pipelineType));
   summary += QFormatStr("- Files exported: `%1`\n").arg(m_Files.count());
   summary += QFormatStr("- Failures: `%1`\n\n").arg(m_Failures.count());
+
+  summary += lit("## Shader Reconstruction Notes\n\n");
+  summary += lit("- Codex entry point: run `/goal UnityShaderReconstructionGoal.md` from this export directory.\n");
+  summary += lit("- Target stack: Unity 6.0 (6000.0.62f1), URP 17.0.4, mobile, Vulkan primary with OpenGLES compatibility, Deferred, Render Graph, GPU Resident Drawer/instanced drawing.\n");
+  summary += lit("- Active shader stages are exported, including `Shaders/cs` for compute dispatches. `Shaders/*/disassembly_default.txt` is kept for compatibility; `Shaders/*/disassembly_native_*.txt` is the native DXBC/DXIL disassembly for manual cross-checking.\n");
+  summary += lit("- `Shaders/*/disassembly_hlsl_*.txt` is exported when a RenderDoc disassembly target or configured shader processor can produce HLSL.\n");
+  summary += lit("- `ConstantBuffers/constant_buffers.json` maps each active-stage cbuffer slot to exported files, including CS. `display_name` prefers the same Buffer name shown in RenderDoc's Constant Buffers table.\n");
+  summary += lit("- Compute RWTexture/UAV resources are exported as output textures under `Textures/Outputs` with role `read_write`; these are high-priority when GBuffer is written from CS.\n");
+  summary += lit("- `ConstantBuffers/` data, shader code, input/output textures, mesh exports, and pipeline state are the primary references for shader reconstruction. Unity/URP z-bin, tile, cluster, light-list, and culling buffers can still appear under ConstantBuffers but are usually low-priority renderer intermediate data.\n");
+  summary += lit("- `ResourceBuffers/` contains raw SRV/UAV buffers. Consult them only when shader code directly indexes those resources. See `ResourceBuffers/README.md` and `resource_buffers.json`.\n\n");
 
   if(!m_Failures.empty())
   {
