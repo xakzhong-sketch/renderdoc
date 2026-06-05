@@ -113,6 +113,7 @@
     <addaction name="separator"/>
     <addaction name="menu_Import_From"/>
     <addaction name="menu_Export_As"/>
+    <addaction name="action_Export_Current_Drawcall_Data"/>
     <addaction name="separator"/>
     <addaction name="menu_Recent_Capture_Files"/>
     <addaction name="menu_Recent_Capture_Settings"/>
@@ -519,6 +520,11 @@
    </property>
    <property name="shortcut">
     <string>Ctrl+Shift+O</string>
+   </property>
+  </action>
+  <action name="action_Export_Current_Drawcall_Data">
+   <property name="text">
+    <string>Export Current &amp;Drawcall Data...</string>
    </property>
   </action>
  </widget>

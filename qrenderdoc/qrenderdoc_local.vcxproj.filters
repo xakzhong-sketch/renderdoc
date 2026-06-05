@@ -159,6 +159,9 @@
     <ClCompile Include="Code\QRDUtils.cpp">
       <Filter>Code</Filter>
     </ClCompile>
+    <ClCompile Include="Code\DrawcallExport.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
     <ClCompile Include="Code\qprocessinfo.cpp">
       <Filter>Code</Filter>
     </ClCompile>
@@ -978,6 +981,9 @@
       <Filter>3rdparty\Scintilla\src</Filter>
     </ClInclude>
     <ClInclude Include="Code\ScintillaSyntax.h">
+      <Filter>Code</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\DrawcallExport.h">
       <Filter>Code</Filter>
     </ClInclude>
     <ClInclude Include="Code\Resources.h">

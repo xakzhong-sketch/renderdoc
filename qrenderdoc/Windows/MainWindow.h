@@ -155,6 +155,7 @@ private slots:
   void on_action_Save_Capture_Inplace_triggered();
   void on_action_Save_Capture_As_triggered();
   void on_action_Close_Capture_triggered();
+  void on_action_Export_Current_Drawcall_Data_triggered();
   void on_action_Mesh_Output_triggered();
   void on_action_API_Inspector_triggered();
   void on_action_Annotation_Viewer_triggered();

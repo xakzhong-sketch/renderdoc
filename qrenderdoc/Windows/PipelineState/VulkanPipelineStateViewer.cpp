@@ -5391,6 +5391,129 @@ void VulkanPipelineStateViewer::exportFOZ_clicked()
     exportFOZ(dir, pso);
 }
 
+bool VulkanPipelineStateViewer::ExportHTMLToFile(const QString &filename)
+{
+  if(!m_Ctx.IsCaptureLoaded())
+    return false;
+
+  QXmlStreamWriter *xmlptr = m_Common.beginHTMLExport(filename);
+
+  if(!xmlptr)
+    return false;
+
+  QXmlStreamWriter &xml = *xmlptr;
+
+  const QStringList &stageNames = ui->pipeFlow->stageNames();
+  const QStringList &stageAbbrevs = ui->pipeFlow->stageAbbreviations();
+
+  int stage = 0;
+  for(const QString &sn : stageNames)
+  {
+    xml.writeStartElement(lit("div"));
+    xml.writeStartElement(lit("a"));
+    xml.writeAttribute(lit("name"), stageAbbrevs[stage]);
+    xml.writeEndElement();
+    xml.writeEndElement();
+
+    xml.writeStartElement(lit("div"));
+    xml.writeAttribute(lit("class"), lit("stage"));
+
+    xml.writeStartElement(lit("h1"));
+    xml.writeCharacters(sn);
+    xml.writeEndElement();
+
+    if(m_MeshPipe)
+    {
+      switch(stage)
+      {
+        case 0: exportHTML(xml, m_Ctx.CurVulkanPipelineState()->taskShader); break;
+        case 1: exportHTML(xml, m_Ctx.CurVulkanPipelineState()->meshShader); break;
+        case 2:
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->rasterizer);
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->conditionalRendering);
+          break;
+        case 3: exportHTML(xml, m_Ctx.CurVulkanPipelineState()->fragmentShader); break;
+        case 4:
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Color Blend"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->colorBlend);
+
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Depth Stencil"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->depthStencil);
+
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Current Pass"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->currentPass);
+          break;
+        case 5:
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->computeShader);
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->conditionalRendering);
+          break;
+      }
+    }
+    else
+    {
+      switch(stage)
+      {
+        case 0:
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Input Assembly"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->inputAssembly);
+
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Vertex Input"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->vertexInput);
+          break;
+        case 1: exportHTML(xml, m_Ctx.CurVulkanPipelineState()->vertexShader); break;
+        case 2: exportHTML(xml, m_Ctx.CurVulkanPipelineState()->tessControlShader); break;
+        case 3: exportHTML(xml, m_Ctx.CurVulkanPipelineState()->tessEvalShader); break;
+        case 4:
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->geometryShader);
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->transformFeedback);
+          break;
+        case 5:
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->rasterizer);
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->conditionalRendering);
+          break;
+        case 6: exportHTML(xml, m_Ctx.CurVulkanPipelineState()->fragmentShader); break;
+        case 7:
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Color Blend"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->colorBlend);
+
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Depth Stencil"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->depthStencil);
+
+          xml.writeStartElement(lit("h2"));
+          xml.writeCharacters(tr("Current Pass"));
+          xml.writeEndElement();
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->currentPass);
+          break;
+        case 8:
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->computeShader);
+          exportHTML(xml, m_Ctx.CurVulkanPipelineState()->conditionalRendering);
+          break;
+      }
+    }
+
+    xml.writeEndElement();
+
+    stage++;
+  }
+
+  m_Common.endHTMLExport(xmlptr);
+  return true;
+}
+
 void VulkanPipelineStateViewer::exportHTML_clicked()
 {
   if(!m_Ctx.IsCaptureLoaded())

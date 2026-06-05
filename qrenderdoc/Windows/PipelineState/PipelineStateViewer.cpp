@@ -540,6 +540,154 @@ div.stage table tr td { border-right: 1px solid #AAAAAA; background-color: #EEEE
   return NULL;
 }
 
+QXmlStreamWriter *PipelineStateViewer::beginHTMLExport(const QString &filename)
+{
+  if(!m_Ctx.IsCaptureLoaded() || filename.isEmpty())
+    return NULL;
+
+  QDir dirinfo = QFileInfo(filename).dir();
+  if(!dirinfo.exists())
+  {
+    RDDialog::critical(this, tr("Invalid directory"),
+                       tr("Cannot find target directory to save to"));
+    return NULL;
+  }
+
+  QFile *f = new QFile(filename, this);
+  if(!f->open(QIODevice::WriteOnly | QIODevice::Truncate))
+  {
+    RDDialog::critical(
+        this, tr("Error exporting pipeline state"),
+        tr("Couldn't open path %1 for write.\n%2").arg(filename).arg(f->errorString()));
+
+    delete f;
+    return NULL;
+  }
+
+  QXmlStreamWriter *xmlptr = new QXmlStreamWriter(f);
+  QXmlStreamWriter &xml = *xmlptr;
+
+  xml.setAutoFormatting(true);
+  xml.setAutoFormattingIndent(4);
+  xml.writeStartDocument();
+  xml.writeDTD(lit("<!DOCTYPE html>"));
+
+  xml.writeStartElement(lit("html"));
+  xml.writeAttribute(lit("lang"), lit("en"));
+
+  QString title = tr("%1 EID %2 - %3 Pipeline export")
+                      .arg(QFileInfo(m_Ctx.GetCaptureFilename()).fileName())
+                      .arg(m_Ctx.CurEvent())
+                      .arg(GetCurrentAPI());
+
+  xml.writeStartElement(lit("head"));
+
+  xml.writeStartElement(lit("meta"));
+  xml.writeAttribute(lit("charset"), lit("utf-8"));
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("meta"));
+  xml.writeAttribute(lit("http-equiv"), lit("X-UA-Compatible"));
+  xml.writeAttribute(lit("content"), lit("IE=edge"));
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("meta"));
+  xml.writeAttribute(lit("name"), lit("viewport"));
+  xml.writeAttribute(lit("content"), lit("width=device-width, initial-scale=1"));
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("meta"));
+  xml.writeAttribute(lit("name"), lit("description"));
+  xml.writeAttribute(lit("content"), lit(""));
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("meta"));
+  xml.writeAttribute(lit("name"), lit("author"));
+  xml.writeAttribute(lit("content"), lit(""));
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("meta"));
+  xml.writeAttribute(lit("http-equiv"), lit("Content-Type"));
+  xml.writeAttribute(lit("content"), lit("text/html;charset=utf-8"));
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("title"));
+  xml.writeCharacters(title);
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("style"));
+  xml.writeComment(lit(R"(
+
+/* If you think this css is ugly/bad, open a pull request! */
+body { margin: 20px; }
+div.stage { border: 1px solid #BBBBBB; border-radius: 5px; padding: 16px; margin-bottom: 32px; }
+div.stage h1 { text-decoration: underline; margin-top: 0px; }
+div.stage table { border: 1px solid #AAAAAA; border-collapse: collapse; }
+div.stage table thead tr { border-bottom: 1px solid #AAAAAA; background-color: #EEEEFF; }
+div.stage table tr th { border-right: 1px solid #AAAAAA; padding: 6px; }
+div.stage table tr td { border-right: 1px solid #AAAAAA; background-color: #EEEEEE; padding: 3px; }
+
+)"));
+  xml.writeEndElement();    // </style>
+
+  xml.writeEndElement();    // </head>
+
+  xml.writeStartElement(lit("body"));
+
+  xml.writeStartElement(lit("h1"));
+  xml.writeCharacters(title);
+  xml.writeEndElement();
+
+  xml.writeStartElement(lit("h3"));
+  {
+    uint32_t frameNumber = m_Ctx.FrameInfo().frameNumber;
+    QString context = frameNumber == ~0U ? tr("Capture") : tr("Frame %1").arg(frameNumber);
+    const ActionDescription *action = m_Ctx.CurAction();
+
+    QList<const ActionDescription *> actionstack;
+    const ActionDescription *parent = action ? action->parent : NULL;
+    while(parent)
+    {
+      actionstack.push_front(parent);
+      parent = parent->parent;
+    }
+
+    for(const ActionDescription *d : actionstack)
+      context += QFormatStr(" > %1").arg(d->customName);
+
+    if(action)
+      context += QFormatStr(" => %1").arg(m_Ctx.GetEventBrowser()->GetEventName(action->eventId));
+    else
+      context += tr(" => Capture Start");
+
+    xml.writeCharacters(context);
+  }
+  xml.writeEndElement();    // </h3>
+
+  return xmlptr;
+}
+
+bool PipelineStateViewer::ExportHTMLToFile(const rdcstr &filename)
+{
+  if(!m_Ctx.IsCaptureLoaded())
+    return false;
+
+  OnEventChanged(m_Ctx.CurEvent());
+
+  QString qtFilename = filename;
+
+  if(m_D3D11)
+    return m_D3D11->ExportHTMLToFile(qtFilename);
+  if(m_D3D12)
+    return m_D3D12->ExportHTMLToFile(qtFilename);
+  if(m_GL)
+    return m_GL->ExportHTMLToFile(qtFilename);
+  if(m_Vulkan)
+    return m_Vulkan->ExportHTMLToFile(qtFilename);
+
+  return false;
+}
+
 void PipelineStateViewer::exportHTMLTable(QXmlStreamWriter &xml, const QStringList &cols,
                                           const QList<QVariantList> &rows)
 {

@@ -43,6 +43,7 @@
 #include <QStylePainter>
 #include <QTextEdit>
 #include <QTimer>
+#include "Code/DrawcallExport.h"
 #include "Code/QRDUtils.h"
 #include "Code/Resources.h"
 #include "Widgets/CollapseGroupBox.h"
@@ -5635,6 +5636,7 @@ void EventBrowser::events_contextMenu(const QPoint &pos)
   QAction collapseAll(tr("&Collapse All"), this);
   QAction toggleBookmark(tr("Toggle &Bookmark"), this);
   QAction selectCols(tr("&Select Columns..."), this);
+  QAction exportDrawcallData(tr("Export Current Drawcall Data..."), this);
   QAction rgpSelect(tr("Select &RGP Event"), this);
   rgpSelect.setIcon(Icons::connect());
 
@@ -5647,10 +5649,13 @@ void EventBrowser::events_contextMenu(const QPoint &pos)
   collapseAll.setIcon(Icons::arrow_in());
   toggleBookmark.setIcon(Icons::asterisk_orange());
   selectCols.setIcon(Icons::timeline_marker());
+  exportDrawcallData.setIcon(Icons::save());
 
   expandAll.setEnabled(index.isValid() && ui->events->model()->rowCount(index) > 0);
   collapseAll.setEnabled(expandAll.isEnabled());
   toggleBookmark.setEnabled(m_Ctx.IsCaptureLoaded());
+  exportDrawcallData.setEnabled(index.isValid() && m_Ctx.IsCaptureLoaded() &&
+                                m_Ctx.GetAction(GetEffectiveEID(index)) != NULL);
 
   QObject::connect(&expandAll, &QAction::triggered,
                    [this, index]() { ui->events->expandAll(index); });
@@ -5662,6 +5667,46 @@ void EventBrowser::events_contextMenu(const QPoint &pos)
 
   QObject::connect(&selectCols, &QAction::triggered, this, &EventBrowser::on_colSelect_clicked);
 
+  QObject::connect(&exportDrawcallData, &QAction::triggered, [this, index]() {
+    if(!index.isValid())
+      return;
+
+    SelectEvent(index);
+
+    if(!m_Ctx.IsCaptureLoaded() || m_Ctx.CurAction() == NULL)
+      return;
+
+    QString dir = RDDialog::getExistingDirectory(this, tr("Export current drawcall data"));
+    if(dir.isEmpty())
+      return;
+
+    DrawcallExporter exporter(m_Ctx, this);
+    ResultDetails result = exporter.ExportCurrentDrawcall(dir, DrawcallExportOptions());
+
+    if(!result.OK())
+    {
+      RDDialog::critical(this, tr("Error exporting drawcall data"),
+                         tr("Couldn't export current drawcall data.\n\n%1").arg(result.Message()));
+      return;
+    }
+
+    if(exporter.FailureCount() > 0)
+    {
+      RDDialog::warning(
+          this, tr("Drawcall data exported with warnings"),
+          tr("Exported current drawcall data to:\n\n%1\n\n%2 item(s) failed. See manifest.json and "
+             "export_summary.md for details.")
+              .arg(exporter.ExportDirectory())
+              .arg(exporter.FailureCount()));
+    }
+    else
+    {
+      RDDialog::information(this, tr("Drawcall data exported"),
+                            tr("Exported current drawcall data to:\n\n%1")
+                                .arg(exporter.ExportDirectory()));
+    }
+  });
+
   IRGPInterop *rgp = m_Ctx.GetRGPInterop();
   if(rgp && rgp->HasRGPEvent(m_Ctx.CurEvent()))
   {
@@ -5670,6 +5715,8 @@ void EventBrowser::events_contextMenu(const QPoint &pos)
                      [this, rgp]() { rgp->SelectRGPEvent(m_Ctx.CurEvent()); });
   }
 
+  contextMenu.addSeparator();
+  contextMenu.addAction(&exportDrawcallData);
   contextMenu.addSeparator();
 
   m_Ctx.Extensions().MenuDisplaying(ContextMenu::EventBrowser_Event, &contextMenu,

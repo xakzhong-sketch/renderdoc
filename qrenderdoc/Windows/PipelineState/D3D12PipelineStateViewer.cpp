@@ -3590,6 +3590,77 @@ bool D3D12PipelineStateViewer::isByteAddress(const Descriptor &descriptor,
   return false;
 }
 
+bool D3D12PipelineStateViewer::ExportHTMLToFile(const QString &filename)
+{
+  if(!m_Ctx.IsCaptureLoaded())
+    return false;
+
+  QXmlStreamWriter *xmlptr = m_Common.beginHTMLExport(filename);
+
+  if(!xmlptr)
+    return false;
+
+  QXmlStreamWriter &xml = *xmlptr;
+
+  const QStringList &stageNames = ui->pipeFlow->stageNames();
+  const QStringList &stageAbbrevs = ui->pipeFlow->stageAbbreviations();
+
+  int stage = 0;
+  for(const QString &sn : stageNames)
+  {
+    xml.writeStartElement(lit("div"));
+    xml.writeStartElement(lit("a"));
+    xml.writeAttribute(lit("name"), stageAbbrevs[stage]);
+    xml.writeEndElement();
+    xml.writeEndElement();
+
+    xml.writeStartElement(lit("div"));
+    xml.writeAttribute(lit("class"), lit("stage"));
+
+    xml.writeStartElement(lit("h1"));
+    xml.writeCharacters(sn);
+    xml.writeEndElement();
+
+    if(m_MeshPipe)
+    {
+      switch(stage)
+      {
+        case 0: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->ampShader); break;
+        case 1: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->meshShader); break;
+        case 2: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->rasterizer); break;
+        case 3: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->pixelShader); break;
+        case 4: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->outputMerger); break;
+        case 5: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->computeShader); break;
+      }
+    }
+    else
+    {
+      switch(stage)
+      {
+        case 0: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->inputAssembly); break;
+        case 1: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->vertexShader); break;
+        case 2: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->hullShader); break;
+        case 3: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->domainShader); break;
+        case 4:
+          exportHTML(xml, m_Ctx.CurD3D12PipelineState()->geometryShader);
+          exportHTML(xml, m_Ctx.CurD3D12PipelineState()->streamOut);
+          break;
+        case 5: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->rasterizer); break;
+        case 6: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->pixelShader); break;
+        case 7: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->outputMerger); break;
+        case 8: exportHTML(xml, m_Ctx.CurD3D12PipelineState()->computeShader); break;
+      }
+    }
+
+    xml.writeEndElement();
+
+    stage++;
+  }
+
+  m_Common.endHTMLExport(xmlptr);
+  return true;
+}
+
 void D3D12PipelineStateViewer::on_exportHTML_clicked()
 {
   if(!m_Ctx.IsCaptureLoaded())

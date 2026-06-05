@@ -174,6 +174,7 @@ SOURCES += Code/qrenderdoc.cpp \
     Code/QRDUtils.cpp \
     Code/MiniQtHelper.cpp \
     Code/BufferFormatter.cpp \
+    Code/DrawcallExport.cpp \
     Code/Resources.cpp \
     Code/RGPInterop.cpp \
     Code/pyrenderdoc/PythonContext.cpp \
@@ -261,6 +262,7 @@ HEADERS += Code/CaptureContext.h \
     Code/ScintillaSyntax.h \
     Code/QRDUtils.h \
     Code/MiniQtHelper.h \
+    Code/DrawcallExport.h \
     Code/Resources.h \
     Code/RGPInterop.h \
     Code/pyrenderdoc/PythonContext.h \

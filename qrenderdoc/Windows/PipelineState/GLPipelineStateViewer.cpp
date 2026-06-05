@@ -3943,6 +3943,59 @@ void GLPipelineStateViewer::exportHTML(QXmlStreamWriter &xml, const GLPipe::Fram
   }
 }
 
+bool GLPipelineStateViewer::ExportHTMLToFile(const QString &filename)
+{
+  QXmlStreamWriter *xmlptr = m_Common.beginHTMLExport(filename);
+
+  if(!xmlptr)
+    return false;
+
+  QXmlStreamWriter &xml = *xmlptr;
+
+  const QStringList &stageNames = ui->pipeFlow->stageNames();
+  const QStringList &stageAbbrevs = ui->pipeFlow->stageAbbreviations();
+
+  int stage = 0;
+  for(const QString &sn : stageNames)
+  {
+    xml.writeStartElement(lit("div"));
+    xml.writeStartElement(lit("a"));
+    xml.writeAttribute(lit("name"), stageAbbrevs[stage]);
+    xml.writeEndElement();
+    xml.writeEndElement();
+
+    xml.writeStartElement(lit("div"));
+    xml.writeAttribute(lit("class"), lit("stage"));
+
+    xml.writeStartElement(lit("h1"));
+    xml.writeCharacters(sn);
+    xml.writeEndElement();
+
+    switch(stage)
+    {
+      case 0: exportHTML(xml, m_Ctx.CurGLPipelineState()->vertexInput); break;
+      case 1: exportHTML(xml, m_Ctx.CurGLPipelineState()->vertexShader); break;
+      case 2: exportHTML(xml, m_Ctx.CurGLPipelineState()->tessControlShader); break;
+      case 3: exportHTML(xml, m_Ctx.CurGLPipelineState()->tessEvalShader); break;
+      case 4:
+        exportHTML(xml, m_Ctx.CurGLPipelineState()->geometryShader);
+        exportHTML(xml, m_Ctx.CurGLPipelineState()->transformFeedback);
+        break;
+      case 5: exportHTML(xml, m_Ctx.CurGLPipelineState()->rasterizer); break;
+      case 6: exportHTML(xml, m_Ctx.CurGLPipelineState()->fragmentShader); break;
+      case 7: exportHTML(xml, m_Ctx.CurGLPipelineState()->framebuffer); break;
+      case 8: exportHTML(xml, m_Ctx.CurGLPipelineState()->computeShader); break;
+    }
+
+    xml.writeEndElement();
+
+    stage++;
+  }
+
+  m_Common.endHTMLExport(xmlptr);
+  return true;
+}
+
 void GLPipelineStateViewer::on_exportHTML_clicked()
 {
   QXmlStreamWriter *xmlptr = m_Common.beginHTMLExport();

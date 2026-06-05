@@ -658,6 +658,14 @@ QWidget.
 )");
   virtual void SelectPipelineStage(PipelineStage stage) = 0;
 
+  DOCUMENT(R"(Export the current pipeline state to an HTML file without prompting for a filename.
+
+:param str filename: The file path to export to.
+:return: ``True`` if the file was exported successfully, ``False`` otherwise.
+:rtype: bool
+)");
+  virtual bool ExportHTMLToFile(const rdcstr &filename) = 0;
+
 protected:
   IPipelineStateViewer() = default;
   ~IPipelineStateViewer() = default;

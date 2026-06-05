@@ -37,6 +37,7 @@
 #include <QShortcut>
 #include <QToolButton>
 #include <QToolTip>
+#include "Code/DrawcallExport.h"
 #include "Code/QRDUtils.h"
 #include "Code/Resources.h"
 #include "Widgets/Extended/RDLabel.h"
@@ -486,6 +487,7 @@ MainWindow::MainWindow(ICaptureContext &ctx) : QMainWindow(NULL), ui(new Ui::Mai
   ui->action_Save_Capture_Inplace->setEnabled(false);
   ui->action_Save_Capture_As->setEnabled(false);
   ui->action_Close_Capture->setEnabled(false);
+  ui->action_Export_Current_Drawcall_Data->setEnabled(false);
   ui->menu_Export_As->setEnabled(false);
 
   {
@@ -2234,6 +2236,7 @@ void MainWindow::OnCaptureLoaded()
   ui->action_Save_Capture_As->setEnabled(true);
   ui->action_Close_Capture->setEnabled(true);
   ui->menu_Export_As->setEnabled(true);
+  ui->action_Export_Current_Drawcall_Data->setEnabled(m_Ctx.CurAction() != NULL);
 
   // don't allow changing context while capture is open
   contextChooser->setEnabled(false);
@@ -2297,6 +2300,7 @@ void MainWindow::OnCaptureClosed()
   ui->action_Save_Capture_As->setEnabled(false);
   ui->action_Close_Capture->setEnabled(false);
   ui->menu_Export_As->setEnabled(false);
+  ui->action_Export_Current_Drawcall_Data->setEnabled(false);
 
   ui->action_Start_Replay_Loop->setEnabled(false);
   ui->action_Open_RGP_Profile->setEnabled(false);
@@ -2332,6 +2336,10 @@ void MainWindow::OnCaptureClosed()
 
 void MainWindow::OnEventChanged(uint32_t eventId)
 {
+  Q_UNUSED(eventId);
+
+  ui->action_Export_Current_Drawcall_Data->setEnabled(m_Ctx.IsCaptureLoaded() &&
+                                                      m_Ctx.CurAction() != NULL);
 }
 
 void MainWindow::RegisterShortcut(const rdcstr &shortcut, QWidget *widget, ShortcutCallback callback)
@@ -2475,6 +2483,42 @@ void MainWindow::on_action_Save_Capture_Inplace_triggered()
 void MainWindow::on_action_Save_Capture_As_triggered()
 {
   PromptSaveCaptureAs();
+}
+
+void MainWindow::on_action_Export_Current_Drawcall_Data_triggered()
+{
+  if(!m_Ctx.IsCaptureLoaded() || m_Ctx.CurAction() == NULL)
+    return;
+
+  QString dir = RDDialog::getExistingDirectory(this, tr("Export current drawcall data"));
+  if(dir.isEmpty())
+    return;
+
+  DrawcallExporter exporter(m_Ctx, this);
+  ResultDetails result = exporter.ExportCurrentDrawcall(dir, DrawcallExportOptions());
+
+  if(!result.OK())
+  {
+    RDDialog::critical(this, tr("Error exporting drawcall data"),
+                       tr("Couldn't export current drawcall data.\n\n%1").arg(result.Message()));
+    return;
+  }
+
+  if(exporter.FailureCount() > 0)
+  {
+    RDDialog::warning(
+        this, tr("Drawcall data exported with warnings"),
+        tr("Exported current drawcall data to:\n\n%1\n\n%2 item(s) failed. See manifest.json and "
+           "export_summary.md for details.")
+            .arg(exporter.ExportDirectory())
+            .arg(exporter.FailureCount()));
+  }
+  else
+  {
+    RDDialog::information(this, tr("Drawcall data exported"),
+                          tr("Exported current drawcall data to:\n\n%1")
+                              .arg(exporter.ExportDirectory()));
+  }
 }
 
 void MainWindow::on_action_About_triggered()

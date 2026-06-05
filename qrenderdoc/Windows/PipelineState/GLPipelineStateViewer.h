@@ -64,6 +64,7 @@ public:
 
   void SelectPipelineStage(PipelineStage stage);
   ResourceId GetResource(RDTreeWidgetItem *item);
+  bool ExportHTMLToFile(const QString &filename);
 
 private slots:
   // automatic slots

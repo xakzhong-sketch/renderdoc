@@ -97,6 +97,7 @@ public:
   QWidget *Widget() override { return this; }
   bool SaveShaderFile(const ShaderReflection *shader) override;
   void SelectPipelineStage(PipelineStage stage) override;
+  bool ExportHTMLToFile(const rdcstr &filename) override;
 
   // ICaptureViewer
   void OnCaptureLoaded() override;
@@ -126,6 +127,7 @@ public:
   bool hasThumbnail(QWidget *widget, QModelIndex idx);
 
   QXmlStreamWriter *beginHTMLExport();
+  QXmlStreamWriter *beginHTMLExport(const QString &filename);
   void exportHTMLTable(QXmlStreamWriter &xml, const QStringList &cols,
                        const QList<QVariantList> &rows);
   void exportHTMLTable(QXmlStreamWriter &xml, const QStringList &cols, const QVariantList &row);
