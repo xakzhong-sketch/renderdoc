@@ -25,12 +25,18 @@ Start here:
 
 1. Read `shader_reconstruction_index.json`.
 2. Read `AGENTS.md` and `UnityShaderReconstructionWorkflow.md`.
-3. Read `drawcall.json`, `pipeline_state.html`, and `pipeline_state.json`.
-4. Read all active `Shaders/*` stages. If the event is a compute dispatch or compute-written GBuffer path, start with `Shaders/cs`. Prefer `disassembly_hlsl_*.txt` when present, then cross-check native DXBC/DXIL in `disassembly_native_*.txt` or `disassembly_default.txt`.
-5. Read `ConstantBuffers/constant_buffers.json`, then high-priority decoded cbuffer `.json` or `.csv` files, including `ConstantBuffers/cs` for compute dispatches.
-6. Read `Textures/Metadata/textures.json`, exported input/output textures, compute `RWTexture2D`/UAV GBuffer outputs under `Textures/Outputs`, and `Textures/Metadata/samplers.json`.
-7. Read `Mesh/vertex_input_layout.json`, `Mesh/mesh_postvs.json`, and `Mesh/mesh_postvs.obj`.
-8. Read `ResourceBuffers/resource_buffers.json` only when shader code directly indexes a specific SRV/UAV buffer.
+3. If `Analysis/CPD/custom_primitive_data_summary.md` exists, read it before opening large `ResourceBuffers/` raw files. If it does not exist and the shader appears to use UE Custom Primitive Data, PrimitiveSceneData, InstanceSceneData, GPUScene, Nanite, or compute-written GBuffer data, run the CPD Summary Analyzer from the RenderDoc source checkout:
+
+   ```powershell
+   python tools/shader_reconstruction/cpd_summary.py --dc-export "{{EXPORT_DIR}}" --verbose
+   ```
+
+4. Read `drawcall.json`, `pipeline_state.html`, and `pipeline_state.json`.
+5. Read all active `Shaders/*` stages. If the event is a compute dispatch or compute-written GBuffer path, start with `Shaders/cs`. Prefer `disassembly_hlsl_*.txt` when present, then cross-check native DXBC/DXIL in `disassembly_native_*.txt` or `disassembly_default.txt`.
+6. Read `ConstantBuffers/constant_buffers.json`, then high-priority decoded cbuffer `.json` or `.csv` files, including `ConstantBuffers/cs` for compute dispatches.
+7. Read `Textures/Metadata/textures.json`, exported input/output textures, compute `RWTexture2D`/UAV GBuffer outputs under `Textures/Outputs`, and `Textures/Metadata/samplers.json`.
+8. Read `Mesh/vertex_input_layout.json`, `Mesh/mesh_postvs.json`, and `Mesh/mesh_postvs.obj`.
+9. Read `ResourceBuffers/resource_buffers.json` only when shader code or `Analysis/CPD/custom_primitive_data_summary.md` points to a specific SRV/UAV buffer and byte window.
 
 Reconstruction rules:
 
@@ -43,6 +49,7 @@ Reconstruction rules:
 - Prioritize shader code, decoded cbuffers, textures, samplers, pipeline state, render targets, and mesh metadata.
 - For compute-written GBuffer paths, prioritize `Shaders/cs`, `ConstantBuffers/cs`, CS SRV resources, and CS `read_write` textures exported under `Textures/Outputs`.
 - Treat Unity/URP Z-bin, Tile, cluster, light-list, culling, and large intermediate buffers as low priority unless the shader directly reads them.
+- Treat `Analysis/CPD/custom_primitive_data_summary.md` as a runtime evidence index for UE Custom Primitive Data, PrimitiveSceneData, InstanceSceneData, GPUScene, and Nanite/compute indirect data. Its layout and bundle matches are inference signals; shader load lines and decoded windows are the primary observed evidence.
 
 Expected deliverables:
 
@@ -57,4 +64,5 @@ Completion criteria:
 - Shader logic is traceable to exported disassembly and reflection.
 - CBUFFER layouts and texture/sampler bindings are mapped to Unity declarations.
 - Low-priority URP intermediate buffers are documented but not used as primary evidence unless required by shader instructions.
+- CPD/Primitive/Instance data claims are backed by `Analysis/CPD` evidence when that report exists, or explicitly listed as unresolved when dynamic indexing prevents a deterministic value.
 - The final answer cites the export files used for major reconstruction decisions.

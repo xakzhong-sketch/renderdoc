@@ -23,7 +23,10 @@
  ******************************************************************************/
 
 #include "MainWindow.h"
+#include <QCoreApplication>
 #include <QDesktopServices>
+#include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -34,7 +37,9 @@
 #include <QPixmapCache>
 #include <QProgressBar>
 #include <QProgressDialog>
+#include <QProcess>
 #include <QShortcut>
+#include <QTextStream>
 #include <QToolButton>
 #include <QToolTip>
 #include "Code/DrawcallExport.h"
@@ -62,6 +67,49 @@
 #if defined(Q_OS_WIN32)
 extern "C" void *__stdcall GetModuleHandleA(const char *);
 #endif
+
+static QString FindCPDSummaryAnalyzerScript()
+{
+  QStringList candidateRoots;
+  candidateRoots << QDir::currentPath();
+
+  QDir appDir(QCoreApplication::applicationDirPath());
+  for(int i = 0; i < 8; i++)
+  {
+    candidateRoots << appDir.absolutePath();
+    if(!appDir.cdUp())
+      break;
+  }
+
+  for(const QString &root : candidateRoots)
+  {
+    const QString path = QDir(root).filePath(lit("tools/shader_reconstruction/cpd_summary.py"));
+    if(QFileInfo(path).exists())
+      return QFileInfo(path).absoluteFilePath();
+  }
+
+  return QString();
+}
+
+static void WriteCPDAnalyzerLog(const QString &exportDir, const QString &program,
+                                const QStringList &arguments, const QByteArray &output)
+{
+  QFileInfo logInfo(QDir(exportDir).filePath(lit("Analysis/CPD/cpd_summary.log")));
+  QDir().mkpath(logInfo.dir().absolutePath());
+
+  QFile log(logInfo.absoluteFilePath());
+  if(!log.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+    return;
+
+  QTextStream stream(&log);
+  stream.setCodec("UTF-8");
+  stream << "program: " << program << "\n";
+  stream << "arguments:\n";
+  for(const QString &arg : arguments)
+    stream << "  " << arg << "\n";
+  stream << "\noutput:\n";
+  stream << QString::fromUtf8(output);
+}
 
 NetworkWorker::NetworkWorker() : QObject(NULL)
 {
@@ -2750,6 +2798,97 @@ void MainWindow::on_action_EmbedExternalFiles_triggered()
 void MainWindow::on_action_RemoveExternalFiles_triggered()
 {
   m_Ctx.RemoveDependentFiles();
+}
+
+void MainWindow::on_action_Run_CPD_Summary_Analyzer_triggered()
+{
+  const QString exportDir = RDDialog::getExistingDirectory(
+      this, tr("Select RenderDoc drawcall export directory"));
+  if(exportDir.isEmpty())
+    return;
+
+  const bool looksLikeExport =
+      QFileInfo(QDir(exportDir).filePath(lit("manifest.json"))).exists() ||
+      QFileInfo(QDir(exportDir).filePath(lit("drawcall.json"))).exists();
+  if(!looksLikeExport)
+  {
+    QMessageBox::StandardButton res = RDDialog::question(
+        this, tr("Run CPD Summary Analyzer"),
+        tr("The selected directory does not contain manifest.json or drawcall.json.\n\n"
+           "Run the analyzer anyway?"),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if(res != QMessageBox::Yes)
+      return;
+  }
+
+  const QString scriptPath = FindCPDSummaryAnalyzerScript();
+  if(scriptPath.isEmpty())
+  {
+    RDDialog::critical(
+        this, tr("CPD Summary Analyzer Not Found"),
+        tr("Could not find tools/shader_reconstruction/cpd_summary.py.\n\n"
+           "Run qrenderdoc from a RenderDoc source checkout or copy the analyzer tools next to the "
+           "application directory."));
+    return;
+  }
+
+  const QString bundleDir = RDDialog::getExistingDirectory(
+      this, tr("Select optional UE unpacked/bundle analysis directory. Cancel to skip."));
+  const QString layoutPath = RDDialog::getOpenFileName(
+      this, tr("Select optional UE layout JSON. Cancel to skip."), QString(),
+      tr("JSON files (*.json);;All files (*.*)"));
+
+  QStringList arguments;
+  arguments << scriptPath << lit("--dc-export") << exportDir << lit("--verbose");
+  if(!bundleDir.isEmpty())
+    arguments << lit("--bundle") << bundleDir;
+  if(!layoutPath.isEmpty())
+    arguments << lit("--ue-layout") << layoutPath;
+
+  const QString program = lit("python");
+  QProcess *process = new QProcess(this);
+  process->setProgram(program);
+  process->setArguments(arguments);
+  process->setWorkingDirectory(QFileInfo(scriptPath).absolutePath());
+  process->setProcessChannelMode(QProcess::MergedChannels);
+
+  QObject::connect(process, OverloadedSlot<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                   this, [this, process, exportDir, program, arguments](int exitCode,
+                                                                        QProcess::ExitStatus status) {
+                     const QByteArray output = process->readAll();
+                     WriteCPDAnalyzerLog(exportDir, program, arguments, output);
+                     process->deleteLater();
+
+                     const QString reportPath =
+                         QDir(exportDir).filePath(lit("Analysis/CPD/custom_primitive_data_summary.md"));
+                     if(status == QProcess::NormalExit && exitCode == 0)
+                     {
+                       RDDialog::information(
+                           this, tr("CPD Summary Analyzer Complete"),
+                           tr("CPD summary generated:\n\n%1\n\nLog:\n%2")
+                               .arg(reportPath)
+                               .arg(QDir(exportDir).filePath(lit("Analysis/CPD/cpd_summary.log"))));
+                     }
+                     else
+                     {
+                       RDDialog::critical(
+                           this, tr("CPD Summary Analyzer Failed"),
+                           tr("Analyzer exited with code %1.\n\nLog:\n%2")
+                               .arg(exitCode)
+                               .arg(QDir(exportDir).filePath(lit("Analysis/CPD/cpd_summary.log"))));
+                     }
+                   });
+
+  process->start();
+  if(!process->waitForStarted(3000))
+  {
+    const QByteArray output = process->readAll();
+    WriteCPDAnalyzerLog(exportDir, program, arguments, output);
+    const QString err = process->errorString();
+    process->deleteLater();
+    RDDialog::critical(this, tr("CPD Summary Analyzer Failed"),
+                       tr("Could not start Python analyzer:\n\n%1").arg(err));
+  }
 }
 
 void MainWindow::on_action_Start_Replay_Loop_triggered()

@@ -2577,7 +2577,7 @@ QString DrawcallExporter::DefaultShaderReconstructionGoalTemplate() const
   text += lit("- Rendering path: {{RENDERING_PATH}}\n");
   text += lit("- Render Graph: {{RENDER_GRAPH}}\n");
   text += lit("- GPU Resident Drawer: {{GPU_RESIDENT_DRAWER}}\n\n");
-  text += lit("Start by reading `shader_reconstruction_index.json`, `AGENTS.md`, `drawcall.json`, `pipeline_state.html`, shader disassembly files, `ConstantBuffers/constant_buffers.json`, texture metadata, sampler metadata, and mesh metadata.\n\n");
+  text += lit("Start by reading `shader_reconstruction_index.json`, `AGENTS.md`, `UnityShaderReconstructionWorkflow.md`, and `Analysis/CPD/custom_primitive_data_summary.md` if it exists. If UE Custom Primitive Data, PrimitiveSceneData, InstanceSceneData, GPUScene, Nanite, or compute-written GBuffer data is involved and the CPD report is missing, run `python tools/shader_reconstruction/cpd_summary.py --dc-export \"{{EXPORT_DIR}}\" --verbose` from the RenderDoc source checkout before inspecting large raw `ResourceBuffers/` files.\n\n");
   text += lit("Deliverables:\n\n");
   text += lit("- Reconstructed Unity shader source suitable for URP 17.0.4.\n");
   text += lit("- Mapping notes from exported RenderDoc bindings to Unity shader properties, cbuffers, textures, samplers, varyings, and passes.\n");
@@ -2586,6 +2586,7 @@ QString DrawcallExporter::DefaultShaderReconstructionGoalTemplate() const
   text += lit("- Shader logic is cross-checked against native DXBC/DXIL disassembly.\n");
   text += lit("- HLSL decompiler output is treated as a draft, not ground truth.\n");
   text += lit("- Low-priority URP Z-bin, Tile, cluster, light-list, culling, and large intermediate buffers are ignored unless shader code directly reads them.\n");
+  text += lit("- CPD/Primitive/Instance data claims are backed by `Analysis/CPD` evidence when available, or explicitly listed as unresolved when dynamic indexing prevents a deterministic value.\n");
   return text;
 }
 
@@ -2621,6 +2622,8 @@ void DrawcallExporter::WriteShaderReconstructionDocs()
   QString templateSource;
   const QString goalTemplate = LoadShaderReconstructionGoalTemplate(&templateSource);
   const QString goal = RenderShaderReconstructionGoalTemplate(goalTemplate, templateSource);
+  const QString cpdSummaryPath = lit("Analysis/CPD/custom_primitive_data_summary.md");
+  const bool cpdSummaryExists = QFileInfo(QDir(m_ExportDir).filePath(cpdSummaryPath)).exists();
   QVariantMap goalMeta;
   goalMeta[lit("template_source")] = templateSource;
   if(WriteTextFile(lit("UnityShaderReconstructionGoal.md"), goal))
@@ -2643,15 +2646,29 @@ void DrawcallExporter::WriteShaderReconstructionDocs()
   agents += lit("- GPU Resident Drawer: supported; preserve instanced drawing and instance ID assumptions.\n\n");
   agents += lit("## Codex Goal Entry\n\n");
   agents += lit("From this export directory, start Codex with `/goal UnityShaderReconstructionGoal.md`. That goal file is generated from the project template `AIDoc/UnityShaderReconstructionGoalTemplate.md` when available.\n\n");
+  agents += lit("## CPD Summary Analyzer\n\n");
+  if(cpdSummaryExists)
+  {
+    agents += QFormatStr("A CPD summary already exists at `%1`. Read it before opening large raw `ResourceBuffers/` files.\n\n").arg(cpdSummaryPath);
+  }
+  else
+  {
+    agents += lit("If this export involves UE Custom Primitive Data, PrimitiveSceneData, InstanceSceneData, GPUScene, Nanite, or compute-written GBuffer data, generate a compact evidence report before opening large raw `ResourceBuffers/` files:\n\n");
+    agents += lit("```powershell\n");
+    agents += QFormatStr("python tools/shader_reconstruction/cpd_summary.py --dc-export \"%1\" --verbose\n").arg(QDir::toNativeSeparators(m_ExportDir));
+    agents += lit("```\n\n");
+    agents += QFormatStr("The report path is `%1`.\n\n").arg(cpdSummaryPath);
+  }
   agents += lit("## Read Order\n\n");
   agents += lit("1. `UnityShaderReconstructionGoal.md` for the concrete Codex objective and deliverables.\n");
   agents += lit("2. `shader_reconstruction_index.json` for the priority-grouped file map.\n");
-  agents += lit("3. `drawcall.json`, `pipeline_state.html`, and `pipeline_state.json` for event, topology, bindings, render targets, and fixed-function state.\n");
-  agents += lit("4. `Shaders/*`: read all active stages. For compute GBuffer paths, `Shaders/cs` is primary. Prefer `disassembly_hlsl_*.txt` when present, then cross-check against `disassembly_native_*.txt` or `disassembly_default.txt`.\n");
-  agents += lit("5. `ConstantBuffers/constant_buffers.json`, then high-priority `ConstantBuffers/*/*.json` or `.csv` for decoded parameters, including `ConstantBuffers/cs` for compute dispatches.\n");
-  agents += lit("6. `Textures/Metadata/textures.json`, input textures, output textures, compute RWTexture/UAV GBuffer outputs, and `Textures/Metadata/samplers.json`.\n");
-  agents += lit("7. `Mesh/mesh_postvs.obj`, `Mesh/mesh_postvs.json`, and `Mesh/vertex_input_layout.json` for geometry validation.\n");
-  agents += lit("8. `ResourceBuffers/` only after shader code proves a specific SRV/UAV buffer is required.\n\n");
+  agents += QFormatStr("3. `%1` when it exists, especially for UE CPD/PrimitiveSceneData/InstanceData/GPUScene/Nanite evidence.\n").arg(cpdSummaryPath);
+  agents += lit("4. `drawcall.json`, `pipeline_state.html`, and `pipeline_state.json` for event, topology, bindings, render targets, and fixed-function state.\n");
+  agents += lit("5. `Shaders/*`: read all active stages. For compute GBuffer paths, `Shaders/cs` is primary. Prefer `disassembly_hlsl_*.txt` when present, then cross-check against `disassembly_native_*.txt` or `disassembly_default.txt`.\n");
+  agents += lit("6. `ConstantBuffers/constant_buffers.json`, then high-priority `ConstantBuffers/*/*.json` or `.csv` for decoded parameters, including `ConstantBuffers/cs` for compute dispatches.\n");
+  agents += lit("7. `Textures/Metadata/textures.json`, input textures, output textures, compute RWTexture/UAV GBuffer outputs, and `Textures/Metadata/samplers.json`.\n");
+  agents += lit("8. `Mesh/mesh_postvs.obj`, `Mesh/mesh_postvs.json`, and `Mesh/vertex_input_layout.json` for geometry validation.\n");
+  agents += lit("9. `ResourceBuffers/` only after shader code or the CPD summary proves a specific SRV/UAV buffer and byte window is required.\n\n");
   agents += lit("## Priority Policy\n\n");
   agents += lit("- High priority: shader code/disassembly, pipeline state, decoded constant buffers, bound textures/samplers, render targets, and mesh layout/post-VS geometry.\n");
   agents += lit("- Medium priority: raw shader bytecode, raw cbuffer bytes, raw mesh buffers, and SRV/UAV resource buffers that may be directly referenced.\n");
@@ -2661,6 +2678,7 @@ void DrawcallExporter::WriteShaderReconstructionDocs()
   agents += lit("- Treat HLSL decompiler output as a readable draft, not ground truth. Resolve conflicts with native DXBC/DXIL disassembly and reflection metadata.\n");
   agents += lit("- Keep Unity/URP engine-side intermediate buffers documented but optional unless a binding name or instruction path proves they influence the material result.\n");
   agents += lit("- Reconstruct Unity properties and CBUFFER layouts from decoded constant buffers and reflection names before inferring artistic parameters.\n");
+  agents += lit("- Treat CPD summary layout and bundle matches as inference signals; shader load lines and decoded buffer windows are the primary runtime evidence.\n");
   agents += lit("- Use output textures and post-transform mesh data as validation targets for the reconstructed shader.\n");
   if(WriteTextFile(lit("AGENTS.md"), agents))
     RecordFile(lit("shader_reconstruction_agent_guide"), lit("AGENTS.md"));
@@ -2671,17 +2689,30 @@ void DrawcallExporter::WriteShaderReconstructionDocs()
   workflow += lit("Codex entry: run `/goal UnityShaderReconstructionGoal.md` from this export directory.\n\n");
   workflow += lit("## 1. Orient The Drawcall\n\n");
   workflow += lit("Read `drawcall.json` and `pipeline_state.html/json`. Identify the selected event, draw/dispatch topology, render targets or UAV outputs, depth target if present, active shader IDs, and descriptor bindings.\n\n");
-  workflow += lit("## 2. Recover Shader Logic\n\n");
+  workflow += lit("## 2. Build Or Read CPD Evidence\n\n");
+  if(cpdSummaryExists)
+  {
+    workflow += QFormatStr("Read `%1` before opening large raw `ResourceBuffers/` files. Use it to identify shader load lines, resolved resource buffers, decoded byte windows, UE layout matches, bundle hints, and unresolved dynamic indexing.\n\n").arg(cpdSummaryPath);
+  }
+  else
+  {
+    workflow += lit("If UE Custom Primitive Data, PrimitiveSceneData, InstanceSceneData, GPUScene, Nanite, or compute-written GBuffer data matters, run the CPD Summary Analyzer from the RenderDoc source checkout:\n\n");
+    workflow += lit("```powershell\n");
+    workflow += QFormatStr("python tools/shader_reconstruction/cpd_summary.py --dc-export \"%1\" --verbose\n").arg(QDir::toNativeSeparators(m_ExportDir));
+    workflow += lit("```\n\n");
+    workflow += QFormatStr("Then read `%1`. If dynamic indexing remains unresolved, keep that uncertainty visible in the Unity shader reconstruction notes.\n\n").arg(cpdSummaryPath);
+  }
+  workflow += lit("## 3. Recover Shader Logic\n\n");
   workflow += lit("Read `Shaders/*/disassembly_targets.json` for every active stage. If the event is a compute dispatch, start with `Shaders/cs`. If `disassembly_hlsl_*.txt` exists, use it as the first-pass HLSL draft. Always compare control flow, resource loads, UAV writes, texture samples, and arithmetic with `disassembly_native_*.txt` or `disassembly_default.txt`.\n\n");
-  workflow += lit("## 3. Map Parameters\n\n");
+  workflow += lit("## 4. Map Parameters\n\n");
   workflow += lit("Read `ConstantBuffers/constant_buffers.json`. Prioritize entries marked `high`. Use each cbuffer JSON/CSV to recover variable names, layout, numeric values, matrices, vectors, feature toggles, and Unity-style property candidates.\n\n");
-  workflow += lit("## 4. Map Textures And Samplers\n\n");
+  workflow += lit("## 5. Map Textures And Samplers\n\n");
   workflow += lit("Read `Textures/Metadata/textures.json` and `samplers.json`. Map SRV/UAV names and slots to Unity `TEXTURE2D`, `RWTexture2D`, `SAMPLER`, render-target, depth, GBuffer, and intermediate texture declarations. Compute `read_write` textures exported under `Textures/Outputs` are high-priority output evidence. Use exported images for material evidence.\n\n");
-  workflow += lit("## 5. Map Geometry Inputs\n\n");
+  workflow += lit("## 6. Map Geometry Inputs\n\n");
   workflow += lit("Read `Mesh/vertex_input_layout.json` and `Mesh/mesh_postvs.json`. Use OBJ output to validate clip/world/object-space assumptions and vertex-stage reconstruction.\n\n");
-  workflow += lit("## 6. Handle Optional Buffers\n\n");
-  workflow += lit("Read `ResourceBuffers/resource_buffers.json` only for buffers directly referenced by shader code. Treat URP Z-bin, Tile, cluster, light-list, and culling data as low priority unless the shader explicitly depends on their values.\n\n");
-  workflow += lit("## 7. Produce The Reconstructed Shader\n\n");
+  workflow += lit("## 7. Handle Optional Buffers\n\n");
+  workflow += lit("Read `ResourceBuffers/resource_buffers.json` only for buffers directly referenced by shader code or CPD summary evidence. Treat URP Z-bin, Tile, cluster, light-list, and culling data as low priority unless the shader explicitly depends on their values.\n\n");
+  workflow += lit("## 8. Produce The Reconstructed Shader\n\n");
   workflow += lit("Write a Unity-compatible shader/HLSL reconstruction with declarations for textures, samplers, cbuffers, vertex inputs, interpolators, and passes. Note any uncertain mapping and cite the source file paths used.\n");
   if(WriteTextFile(lit("UnityShaderReconstructionWorkflow.md"), workflow))
     RecordFile(lit("shader_reconstruction_workflow"),

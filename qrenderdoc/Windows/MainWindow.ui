@@ -53,6 +53,7 @@
     <addaction name="action_Recompress_Capture"/>
     <addaction name="action_EmbedExternalFiles"/>
     <addaction name="action_RemoveExternalFiles"/>
+    <addaction name="action_Run_CPD_Summary_Analyzer"/>
     <addaction name="separator"/>
     <addaction name="action_Start_Replay_Loop"/>
     <addaction name="action_Create_RGP_Profile"/>
@@ -525,6 +526,11 @@
   <action name="action_Export_Current_Drawcall_Data">
    <property name="text">
     <string>Export Current &amp;Drawcall Data...</string>
+   </property>
+  </action>
+  <action name="action_Run_CPD_Summary_Analyzer">
+   <property name="text">
+    <string>Run CPD Summary Analyzer...</string>
    </property>
   </action>
  </widget>

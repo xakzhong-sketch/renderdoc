@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "engine": "UE5.5",
+  "source": "Example only. Verify offsets against the target project's engine source and shader dumps before using as evidence.",
+  "layouts": {
+    "PrimitiveSceneData": {
+      "stride_bytes": 512,
+      "fields": [
+        { "name": "LocalToWorld", "offset": 0, "type": "float4x3" },
+        { "name": "WorldToLocal", "offset": 48, "type": "float4x3" },
+        { "name": "ObjectWorldPositionAndRadius", "offset": 96, "type": "float4" },
+        { "name": "ObjectBounds", "offset": 112, "type": "float4" },
+        { "name": "CustomPrimitiveData", "offset": 320, "type": "float4[]", "count": 8 }
+      ]
+    },
+    "InstanceSceneData": {
+      "stride_bytes": 128,
+      "fields": [
+        { "name": "LocalToPrimitive", "offset": 0, "type": "float4x3" },
+        { "name": "PrimitiveId", "offset": 96, "type": "uint" },
+        { "name": "CustomDataOffset", "offset": 100, "type": "uint" }
+      ]
+    }
+  }
+}
+
