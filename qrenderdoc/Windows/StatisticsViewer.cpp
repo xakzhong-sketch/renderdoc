@@ -24,11 +24,76 @@
 
 #include "StatisticsViewer.h"
 #include <QFontDatabase>
+#include <QPointer>
 #include "Code/QRDUtils.h"
 #include "ui_StatisticsViewer.h"
 
 static const int HistogramWidth = 128;
 static const QString Stars = QString(HistogramWidth, QLatin1Char('*'));
+
+struct TriangleDraw
+{
+  uint32_t eventId = 0;
+  uint32_t numIndices = 0;
+  uint32_t numInstances = 0;
+  bool indexed = false;
+};
+
+struct TriangleCount
+{
+  uint64_t triangles = 0;
+  uint32_t triangleDraws = 0;
+  uint32_t nonTriangleDraws = 0;
+  uint32_t unsupportedDraws = 0;
+  uint32_t restartDraws = 0;
+  uint32_t meshDispatches = 0;
+};
+
+static void CollectTriangleDraws(const rdcarray<ActionDescription> &actions,
+                                 rdcarray<TriangleDraw> &draws, uint32_t &meshDispatches)
+{
+  for(const ActionDescription &action : actions)
+  {
+    if(action.flags & ActionFlags::MeshDispatch)
+    {
+      meshDispatches++;
+    }
+    else if(action.flags & ActionFlags::Drawcall)
+    {
+      TriangleDraw draw;
+      draw.eventId = action.eventId;
+      draw.numIndices = action.numIndices;
+      draw.numInstances = action.numInstances;
+      draw.indexed = bool(action.flags & ActionFlags::Indexed);
+      draws.push_back(draw);
+    }
+
+    CollectTriangleDraws(action.children, draws, meshDispatches);
+  }
+}
+
+static uint64_t PrimitiveCount(Topology topology, uint32_t vertexCount, bool &isTriangle,
+                               bool &isSupported)
+{
+  isTriangle = true;
+  isSupported = true;
+
+  switch(topology)
+  {
+    case Topology::TriangleList: return vertexCount / 3;
+    case Topology::TriangleStrip:
+    case Topology::TriangleFan: return vertexCount >= 3 ? vertexCount - 2 : 0;
+    case Topology::TriangleList_Adj: return vertexCount / 6;
+    case Topology::TriangleStrip_Adj: return vertexCount >= 6 ? (vertexCount - 4) / 2 : 0;
+    case Topology::PointList:
+    case Topology::LineList:
+    case Topology::LineStrip:
+    case Topology::LineLoop:
+    case Topology::LineList_Adj:
+    case Topology::LineStrip_Adj: isTriangle = false; return 0;
+    default: isSupported = false; return 0;
+  }
+}
 
 QString Pow2IndexAsReadable(int index)
 {
@@ -813,6 +878,7 @@ StatisticsViewer::StatisticsViewer(ICaptureContext &ctx, QWidget *parent)
   ui->setupUi(this);
 
   ui->statistics->setFont(Formatter::FixedFont());
+  ui->calculateTriangles->setEnabled(false);
 
   m_Ctx.AddCaptureViewer(this);
 }
@@ -827,11 +893,100 @@ StatisticsViewer::~StatisticsViewer()
 
 void StatisticsViewer::OnCaptureClosed()
 {
+  m_TriangleCalculation++;
+  ui->calculateTriangles->setEnabled(false);
+  ui->triangleCountResult->setText(tr("Not calculated"));
+  ui->triangleCountResult->setToolTip(QString());
   ui->statistics->clear();
 }
 
 void StatisticsViewer::OnCaptureLoaded()
 {
+  m_TriangleCalculation++;
+  ui->calculateTriangles->setEnabled(true);
+  ui->triangleCountResult->setText(tr("Not calculated"));
+  ui->triangleCountResult->setToolTip(QString());
   GenerateReport();
   ui->statistics->setText(m_Report);
+}
+
+void StatisticsViewer::on_calculateTriangles_clicked()
+{
+  if(!m_Ctx.IsCaptureLoaded())
+    return;
+
+  rdcarray<TriangleDraw> draws;
+  TriangleCount count;
+  CollectTriangleDraws(m_Ctx.CurRootActions(), draws, count.meshDispatches);
+
+  const uint32_t restoreEvent = m_Ctx.CurEvent();
+  const uint32_t calculation = ++m_TriangleCalculation;
+  QPointer<StatisticsViewer> self(this);
+
+  ui->calculateTriangles->setEnabled(false);
+  ui->triangleCountResult->setText(tr("Calculating..."));
+  ui->triangleCountResult->setToolTip(QString());
+
+  m_Ctx.Replay().AsyncInvoke([self, draws, count, restoreEvent,
+                              calculation](IReplayController *controller) mutable {
+    for(const TriangleDraw &draw : draws)
+    {
+      controller->SetFrameEvent(draw.eventId, false);
+      const PipeState &pipe = controller->GetPipelineState();
+      const Topology topology = pipe.GetPrimitiveTopology();
+
+      bool isTriangle = false;
+      bool isSupported = false;
+      const uint64_t primitives = PrimitiveCount(topology, draw.numIndices, isTriangle, isSupported);
+
+      if(!isSupported)
+      {
+        count.unsupportedDraws++;
+      }
+      else if(!isTriangle)
+      {
+        count.nonTriangleDraws++;
+      }
+      else
+      {
+        count.triangleDraws++;
+        count.triangles += primitives * uint64_t(draw.numInstances);
+
+        if(draw.indexed && pipe.IsRestartEnabled())
+          count.restartDraws++;
+      }
+    }
+
+    controller->SetFrameEvent(restoreEvent, true);
+
+    if(!self)
+      return;
+
+    GUIInvoke::call(self, [self, count, calculation]() {
+      if(!self || calculation != self->m_TriangleCalculation)
+        return;
+
+      self->ui->calculateTriangles->setEnabled(true);
+
+      QString result = self->tr("Submitted triangles: %1 (%2 triangle draws)")
+                           .arg(Formatter::Format(count.triangles))
+                           .arg(count.triangleDraws);
+
+      if(count.restartDraws > 0)
+        result += self->tr(" - approximate for %1 primitive-restart draws").arg(count.restartDraws);
+
+      const uint32_t skipped = count.unsupportedDraws + count.meshDispatches;
+      if(skipped > 0)
+        result += self->tr(" - skipped %1 unsupported draws").arg(skipped);
+
+      self->ui->triangleCountResult->setText(result);
+      self->ui->triangleCountResult->setToolTip(
+          self->tr("Counts submitted triangle-list, strip, fan, and adjacency primitives, "
+                   "including instances. %1 point/line draws were ignored. Patch-list and "
+                   "mesh-shader draws cannot be determined from draw parameters and were "
+                   "skipped. Indexed draws with primitive restart are estimated without "
+                   "scanning their index buffers.")
+              .arg(count.nonTriangleDraws));
+    });
+  });
 }

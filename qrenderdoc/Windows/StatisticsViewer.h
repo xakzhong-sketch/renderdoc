@@ -47,11 +47,15 @@ public:
   void OnCaptureClosed() override;
   void OnSelectedEventChanged(uint32_t eventId) override {}
   void OnEventChanged(uint32_t eventId) override {}
+private slots:
+  void on_calculateTriangles_clicked();
+
 private:
   Ui::StatisticsViewer *ui;
   ICaptureContext &m_Ctx;
 
   QString m_Report;
+  uint32_t m_TriangleCalculation = 0;
 
   void AppendDrawStatistics();
   void AppendDispatchStatistics();
